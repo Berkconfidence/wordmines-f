@@ -1,0 +1,54 @@
+app/
+│
+├── (auth)/                   # Giriş ve kayıt ekranları
+│   ├── signin/
+│   │   └── index.tsx        # Giriş ekranı
+│   └── signup/
+│       └── index.tsx        # Kayıt ekranı
+│
+├── (tabs)/                  # Giriş sonrası gözüken alt sayfalar (ana layout)
+│   ├── layout.tsx           # Tab bar ve genel yerleşim
+│
+│   ├── home/                # Ana ekran - "Yeni Oyun", "Aktif Oyunlar", "Biten Oyunlar"
+│   │   └── index.tsx
+│
+│   ├── new-game/            # Yeni oyun süresi seçimi ve eşleşme ekranı
+│   │   ├── index.tsx        # Süre seçim ekranı
+│   │   └── waiting.tsx      # Eşleştirme bekleme ekranı
+│
+│   ├── active-games/        # Devam eden oyunlar listesi
+│   │   ├── index.tsx
+│   │   └── [gameId].tsx     # Seçilen aktif oyunun detayı
+│
+│   ├── finished-games/      # Bitmiş oyunlar listesi
+│   │   ├── index.tsx
+│   │   └── [gameId].tsx     # Seçilen bitmiş oyunun sonucu
+│
+│   └── profile/             # Profil veya ayarlar ekranı (opsiyonel)
+│       └── index.tsx
+│
+├── components/              
+│   ├── GameBoard.tsx        # 15x15 grid ve harf/mayın render
+│   ├── LetterTile.tsx       # Tek harf karesi (dokunma etkileşimli)
+│   ├── ScorePanel.tsx       # Puan, kalan harf sayısı ve rakip bilgileri
+│   ├── MineEffect.tsx       # Puan bölünmesi/transferi animasyonları
+│   ├── RewardPanel.tsx      # Ödül jokerlerinin kullanım arayüzü
+│   ├── GameCard.tsx
+│   ├── Header.tsx
+│   └── Button.tsx
+│
+├── services/                # API istekleri
+│   ├── gameService.ts       # Oyun oluşturma, listeleme, detay alma
+│   ├── authService.ts       # Giriş / kayıt işlemleri
+│   └── socketService.ts      # WebSocket bağlantısı ve olayları
+│
+├── utils/                   # Yardımcı fonksiyonlar
+│   ├── wordValidator.ts     # Kelime listesini yükleme ve kontrol
+│   ├── letterPool.ts        # Harf havuzu oluşturma ve dağıtım 
+│   └── timeUtils.ts
+│
+├── types/                   # TypeScript arayüzleri
+│   └── gameTypes.ts
+│
+└── constants/               # Sabit değerler (zamanlar, etiketler, vs.)
+    └── timeOptions.ts
