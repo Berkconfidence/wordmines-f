@@ -5,7 +5,7 @@ import { Colors } from '../../constants/Colors';
 import Animated, { FadeInDown, FadeInUp } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
 import { API_URL } from '../../config';
-
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 export default function SignIn() {
 
@@ -25,30 +25,41 @@ export default function SignIn() {
         setError('Lütfen tüm alanları doldurun');
         return;
       }
+      console.log('Giriş yapılıyor...');
       
       try {
+        setIsLoading(true);
         const response = await fetch(`${API_URL}/user/login`, {
           method: 'POST',
           headers: {
-            'Content-Type': 'application/json', // JSON olduğunu belirtiyoruz
+            'Content-Type': 'application/json',
           },
-          body: JSON.stringify({ // Objeyi JSON'a çeviriyoruz
+          body: JSON.stringify({
             username: username,
             password: password
           }),
         });
         if(response.ok) {
-          router.push('../(tabs)/index');
+          const data = await response.json();
+          console.log('Login response:', data);
+          // userId'yi string olarak kaydet
+          if (data && data.id) {
+            await AsyncStorage.setItem('userId', String(data.id));
+            console.log('User ID:', data.id);
+            router.push('/(tabs)/home');
+          } else {
+            setError('Kullanıcı bilgisi alınamadı.');
+          }
         }
         else {
           setError('Kullanıcı adı veya şifre hatalı');
         }
-
       }
       catch (error) {
         setError('Bir hata oluştu. Lütfen tekrar deneyin.');
+      } finally {
+        setIsLoading(false);
       }
-
     };
     
     const handleForgotPassword = async () => {
@@ -68,7 +79,7 @@ export default function SignIn() {
           >
             <View style={styles.formContainer}>
               <Animated.View 
-                entering={FadeInDown.duration(1000).springify()}
+                //entering={FadeInDown.duration(1000).springify()}
                 style={styles.headerContainer}
               >
                 <Text style={styles.title}>Kelime Mayınları'na</Text>
@@ -77,7 +88,7 @@ export default function SignIn() {
               </Animated.View>
               
               <Animated.View 
-                entering={FadeInUp.duration(1000).springify()}
+                //entering={FadeInUp.duration(1000).springify()}
                 style={styles.inputContainer}
               >
                 <View style={styles.inputWrapper}>
@@ -368,4 +379,3 @@ export default function SignIn() {
         fontWeight: '600',
       },
     });
-    
