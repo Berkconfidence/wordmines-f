@@ -27,6 +27,10 @@ app/
 │   └── profile/             # Profil veya ayarlar ekranı (opsiyonel)
 │       └── index.tsx
 │
+├── game/                 
+│   ├── layout.tsx           
+│   ├── [roomId].tsx
+│
 ├── components/              
 │   ├── GameBoard.tsx        # 15x15 grid ve harf/mayın render
 │   ├── LetterTile.tsx       # Tek harf karesi (dokunma etkileşimli)

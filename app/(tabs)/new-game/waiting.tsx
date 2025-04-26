@@ -34,19 +34,23 @@ export default function WaitingScreen() {
         userId,
         Number(duration),
         (update) => {
-          // Güncelleme geldiğinde
-          // setQueueInfo(update);
+          
         },
         (matchData) => {
-          // Eşleşme bulunduğunda
-          console.log("Eşleşme bulundu!", matchData);
-          // Burada oyuna yönlendirme yapılabilir
+          router.push({
+            pathname: "/game/[roomId]",
+            params: { roomId: matchData.roomId, opponentId: matchData.opponentId, userId: userId },
+          });
         },
         (err) => {
-          // Hata durumunda
           setError(err.message || "Bir hata oluştu");
         }
       );
+
+      router.push({
+        pathname: "/game/[roomId]",
+        params: { roomId: 1923, opponentId: 5, userId: 1 },
+      });
       
       // Temizleme fonksiyonu
       return () => {
