@@ -6,6 +6,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../../../constants/Colors';
 import { startMatchmaking } from '../../../services/socketService';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { API_URL } from '@/config';
 
 export default function WaitingScreen() {
   const params = useLocalSearchParams();
@@ -34,23 +35,63 @@ export default function WaitingScreen() {
         userId,
         Number(duration),
         (update) => {
-          
+          // Queue bilgilerini güncelle
+          if (update.queueLength || update.estimatedTime) {
+            setQueueInfo({
+              queueLength: update.queueLength || 0,
+              estimatedTime: update.estimatedTime || 0
+            });
+          }
         },
-        (matchData) => {
+        async (matchData) => {
+          // Eşleşme bulundu
+          //console.log("Eşleşme bulundu:", matchData);
+          
+          // Eğer bu oyuncu "initiator" olarak belirlendiyse, oda oluşturma isteği gönder
+          if (matchData.initiator) {
+            try {
+              console.log("Oda kurucusu olarak belirlendiniz. Oda oluşturuluyor...");
+              const formData = new FormData();
+              formData.append('roomId', matchData.roomId);
+              formData.append('userId', userId);
+              formData.append('opponentId', matchData.opponentId);
+              formData.append('duration', duration);
+              
+              const response = await fetch(`${API_URL}/gameroom/create`, {
+                method: 'POST',
+                body: formData,
+              });
+          
+              if (!response.ok) {
+                throw new Error('Oda oluşturma başarısız oldu');
+              }
+          
+              const data = await response.json();
+              matchData.roomId = data.roomId;
+              console.log("Oda başarıyla oluşturuldu:", matchData.roomId);
+          
+            } catch (error) {
+              console.error("Oda oluşturma hatası:", error);
+              // Oda oluşturulamazsa yönlendirme yapılmaz
+              return;
+            }
+          } else {
+            console.log("Oda kurucusu değilsiniz, hazır odaya katılıyorsunuz...");
+          }
+          
           router.push({
             pathname: "/game/[roomId]",
-            params: { roomId: matchData.roomId, opponentId: matchData.opponentId, userId: userId },
+            params: { 
+              roomId: matchData.roomId,
+              opponentId: matchData.opponentId,
+              userId: userId
+            },
           });
         },
         (err) => {
           setError(err.message || "Bir hata oluştu");
         }
       );
-
-      router.push({
-        pathname: "/game/[roomId]",
-        params: { roomId: 1923, opponentId: 5, userId: 1 },
-      });
       
       // Temizleme fonksiyonu
       return () => {

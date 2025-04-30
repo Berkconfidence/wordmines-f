@@ -39,7 +39,8 @@ export const startMatchmaking = (userId: string, duration: number,
     // Eşleşme sonucu
     client.subscribe('/user/queue/game-matched', message => {
       const data = JSON.parse(message.body);
-      console.log("Eşleşme bulundu:", data);
+      //console.log("Eşleşme bulundu:", data);
+      
       if (onMatch) onMatch(data);
     });
 
