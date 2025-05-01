@@ -1,12 +1,11 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Dimensions, ActivityIndicator } from 'react-native';
-import { INITIAL_BOARD } from '../constants/gameBoard';
 import LetterTile from './LetterTile';
-import { getRandomLetters } from '../constants/letterDistribution';
 import { LETTER_DISTRIBUTION } from '../constants/letterDistribution';
 import { isValidWordSync } from '../utils/wordValidator';
 import { Ionicons } from '@expo/vector-icons';
 import { API_URL } from '@/config';
+import { sendMove, listenForBoardUpdates } from '../services/socketService';
 
 interface GameBoardProps {
   roomId?: string;
@@ -40,43 +39,124 @@ const GameBoard: React.FC<GameBoardProps> = ({ roomId, userId }) => {
   const [playerTiles, setPlayerTiles] = useState<{ letter: string; points: number }[]>([]);
   const [selectedTileIndex, setSelectedTileIndex] = useState<number | null>(null);
   const [placedLetters, setPlacedLetters] = useState<PlacedLetter[]>([]);
+  const [matrixState, setMatrixState] = useState<any[][]>([]);
   const [wordDirection, setWordDirection] = useState<WordDirection>(WordDirection.NONE);
   const [currentWord, setCurrentWord] = useState<string>('');
   const [wordValidation, setWordValidation] = useState<WordValidationState>(WordValidationState.NONE);
   const { width: windowWidth } = Dimensions.get('window');
-  
+  const [isUsersTurn, setIsUsersTurn] = useState<boolean>(false);
+  const [boardListener, setBoardListener] = useState<(() => void) | null>(null);
+
   // Calculate responsive sizes
   const cellSize = Math.min(windowWidth / 17, 24); // Limiting to max 24px
   const boardContainerWidth = (cellSize + 3) * 15; // 15 cells per row + margins
-  /*
-  useEffect(() => {
-    // Initialize with 7 random letters
-    setPlayerTiles(getRandomLetters(7));
-  }, []);
-  */
 
+  //Tahtayı çekme işlemleri
+  useEffect(() => {
+    const fetchBoardMatrix = async () => {
+      try {
+        const res = await fetch(`${API_URL}/gameboard/matrix?roomId=${roomId}`);
+        const matrix = await res.json();
+        setMatrixState(matrix);
+      } catch (error) {
+        console.error("Tahta verisi alınamadı", error);
+      }
+    };
+  
+    if (roomId) {
+      fetchBoardMatrix();
+    }
+  }, [roomId]);
+
+  // WebSocket ile board güncellemelerini dinle
+  useEffect(() => {
+    if (!roomId || !userId) return;
+    // Önceki dinleyiciyi kaldır
+    if (boardListener) boardListener();
+    const unsubscribe = listenForBoardUpdates(roomId, async (matrix) => {
+      setMatrixState(matrix);
+      // Hamle sonrası harfleri güncelle
+      try {
+        const res = await fetch(`${API_URL}/letters?userId=${userId}&roomId=${roomId}`);
+        const data: string[] = await res.json();
+        const tiles = data.map(letter => {
+          const info = LETTER_DISTRIBUTION.find(l => l.letter === letter);
+          return {
+            letter,
+            points: info ? info.points : 0
+          };
+        });
+        setPlayerTiles(tiles);
+      } catch (error) {
+        console.error("Harfler alınamadı", error);
+      }
+    });
+    setBoardListener(() => unsubscribe);
+    return () => {
+      unsubscribe();
+    };
+  }, [roomId, userId]);
+
+  //Harfleri çekme ve ilk sırayı kontrol etme işlemleri
   useEffect(() => {
     const fetchLetters = async () => {
-        try {
-          console.log("Merhaba")
-            const res = await fetch(`${API_URL}/letters?userId=${userId}&roomId=${roomId}`);
-            const data: string[] = await res.json(); // ["A", "İ", "K", ...]
-            // Her harf için puan bilgisini ekle
-            const tiles = data.map(letter => {
-                const info = LETTER_DISTRIBUTION.find(l => l.letter === letter);
-                return {
-                    letter,
-                    points: info ? info.points : 0
-                };
-            });
-            setPlayerTiles(tiles);
-        } catch (error) {
-            console.error("Harfler alınamadı", error);
-        }
+      try {
+        const res = await fetch(`${API_URL}/letters?userId=${userId}&roomId=${roomId}`);
+        const data: string[] = await res.json(); // ["A", "İ", "K", ...]
+        // Her harf için puan bilgisini ekle
+        const tiles = data.map(letter => {
+          const info = LETTER_DISTRIBUTION.find(l => l.letter === letter);
+          return {
+            letter,
+            points: info ? info.points : 0
+          };
+        });
+        setPlayerTiles(tiles);
+      } catch (error) {
+        console.error("Harfler alınamadı", error);
+      }
     };
+    const fetchTurn = async () => {
+      try {
+        const res = await fetch(`${API_URL}/gameboard/turn?roomId=${roomId}`);
+        const data = await res.json(); // örn: 5 veya "5"
+        // userId ve currentTurn'u string olarak karşılaştır
+        setIsUsersTurn(String(userId) === String(data));
+      } catch (e) {
+        setIsUsersTurn(false);
+      }
+    };
+    if (roomId && userId) {
+      fetchTurn();
+      fetchLetters();
+    }
+  }, [roomId, userId]);
 
-    fetchLetters();
-}, []);
+  // Sıra bilgisini düzenli olarak güncelle (polling)
+  useEffect(() => {
+    let isMounted = true;
+
+    const interval = setInterval(async () => {
+      if (!isMounted) return;
+      try {
+        const res = await fetch(`${API_URL}/gameboard/turn?roomId=${roomId}`);
+        const data = await res.json();
+        if (isMounted) {
+          setIsUsersTurn(String(userId) === String(data));
+        }
+      } catch (e) {
+        if (isMounted) {
+          setIsUsersTurn(false);
+        }
+      }
+    }, 3000);
+
+    return () => {
+      clearInterval(interval);
+      isMounted = false;
+    };
+  }, [roomId, userId]);
+
 
   // Log roomId and userId when they change
   useEffect(() => {
@@ -91,6 +171,7 @@ const GameBoard: React.FC<GameBoardProps> = ({ roomId, userId }) => {
   
   // Handle tile selection
   const handleTileSelect = (index: number) => {
+    if (!isUsersTurn) return;
     setSelectedTileIndex(index === selectedTileIndex ? null : index);
   };
 
@@ -150,65 +231,109 @@ const GameBoard: React.FC<GameBoardProps> = ({ roomId, userId }) => {
     }
   };
 
+  // Yön belirleme fonksiyonu (iki harf arası)
+  const getDirection = (from: {row: number, col: number}, to: {row: number, col: number}): WordDirection => {
+    const dr = to.row - from.row;
+    const dc = to.col - from.col;
+    if (dr === 0 && dc === 1) return WordDirection.HORIZONTAL;
+    if (dr === 1 && dc === 0) return WordDirection.VERTICAL;
+    if (dr === 1 && dc === 1) return WordDirection.DIAGONAL_DOWN;
+    if (dr === -1 && dc === 1) return WordDirection.DIAGONAL_UP;
+    return WordDirection.NONE;
+  };
+
   // Harfin yerleştirilebileceği kareleri hesaplayan fonksiyon
   const calculatePlaceablePositions = (): {row: number, col: number}[] => {
-    // Hiç harf yerleştirilmemişse, sadece merkez hücre kullanılabilir
-    if (placedLetters.length === 0) {
+    // Matris yüklenmediyse veya boşsa erken çık
+    if (!matrixState || matrixState.length === 0) return [];
+
+    // Boardda hiç harf yoksa (oyunun ilk hamlesi)
+    const isBoardEmpty = matrixState.every(row => row.every(cell => !cell.letter || cell.letter === ""));
+
+    // Durum 1: Oyunun ilk harfi yerleştiriliyor (placedLetters boş)
+    if (isBoardEmpty && placedLetters.length === 0) {
       return [centerCell];
     }
-    
-    // Sadece bir harf varsa (merkezdeki ilk harf), ikinci harf için 4 pozisyon kullanılabilir
+
+    // Durum 2: Oyunun ikinci harfi yerleştiriliyor (ilk harf geçici olarak konuldu)
+    // VEYA sonraki bir turda kelimenin ikinci harfi yerleştiriliyor
     if (placedLetters.length === 1) {
-      return [
-        { row: centerCell.row, col: centerCell.col + 1 }, // Sağ
-        { row: centerCell.row + 1, col: centerCell.col }, // Alt
-        { row: centerCell.row + 1, col: centerCell.col + 1 }, // Sağ alt
-        { row: centerCell.row - 1, col: centerCell.col + 1 }, // Sağ üst
+      const first = placedLetters[0].position;
+      const directions = [
+        { dr: -1, dc: 0 }, { dr: 1, dc: 0 }, { dr: 0, dc: -1 }, { dr: 0, dc: 1 },
+        { dr: -1, dc: -1 }, { dr: -1, dc: 1 }, { dr: 1, dc: -1 }, { dr: 1, dc: 1 },
       ];
+      const positions: {row: number, col: number}[] = [];
+      directions.forEach(dir => {
+        const nr = first.row + dir.dr;
+        const nc = first.col + dir.dc;
+        // Sınırları ve hücrenin boş olup olmadığını kontrol et (hem matriste hem geçici harflerde)
+        if (
+          nr >= 0 && nr < 15 && nc >= 0 && nc < 15 &&
+          !(matrixState[nr][nc].letter && matrixState[nr][nc].letter !== "") && // Matriste harf yok
+          !placedLetters.some(item => item.position.row === nr && item.position.col === nc) // Geçici harf yok
+        ) {
+          positions.push({ row: nr, col: nc });
+        }
+      });
+      return positions;
     }
-    
-    // İki veya daha fazla harf yerleştirilmiş ve yön belirlenmiş
-    const lastLetter = placedLetters[placedLetters.length - 1];
-    const nextPosition = { row: lastLetter.position.row, col: lastLetter.position.col };
-    
-    switch (wordDirection) {
-      case WordDirection.HORIZONTAL:
-        nextPosition.col += 1; // Sağa doğru
-        break;
-      case WordDirection.VERTICAL:
-        nextPosition.row += 1; // Aşağı doğru
-        break;
-      case WordDirection.DIAGONAL_DOWN:
-        nextPosition.row += 1;
-        nextPosition.col += 1; // Sağ alt çapraz
-        break;
-      case WordDirection.DIAGONAL_UP:
-        nextPosition.row -= 1;
-        nextPosition.col += 1; // Sağ üst çapraz
-        break;
-      default:
-        return [];
-    }
-    
-    // Boardun sınırları içinde olduğundan emin olalım (15x15 board)
-    if (nextPosition.row >= 0 && nextPosition.row < 15 && 
-        nextPosition.col >= 0 && nextPosition.col < 15) {
-      // Pozisyon boş mu kontrol edelim
-      const isOccupied = placedLetters.some(
-        item => item.position.row === nextPosition.row && item.position.col === nextPosition.col
-      );
-      
-      if (!isOccupied) {
-        return [nextPosition];
+
+    // Durum 3: Üçüncü ve sonraki harfler yerleştiriliyor (yön belirlenmiş)
+    if (placedLetters.length >= 2) {
+      const first = placedLetters[0].position;
+      const second = placedLetters[1].position;
+      const direction = getDirection(first, second);
+      const last = placedLetters[placedLetters.length - 1].position;
+      let nextPos: {row: number, col: number} | null = null;
+
+      switch (direction) {
+        case WordDirection.HORIZONTAL: nextPos = { row: last.row, col: last.col + 1 }; break;
+        case WordDirection.VERTICAL: nextPos = { row: last.row + 1, col: last.col }; break;
+        case WordDirection.DIAGONAL_DOWN: nextPos = { row: last.row + 1, col: last.col + 1 }; break;
+        case WordDirection.DIAGONAL_UP: nextPos = { row: last.row - 1, col: last.col + 1 }; break;
       }
+
+      // Sonraki pozisyon geçerli ve boş mu?
+      if (
+        nextPos &&
+        nextPos.row >= 0 && nextPos.row < 15 &&
+        nextPos.col >= 0 && nextPos.col < 15 &&
+        !(matrixState[nextPos.row][nextPos.col].letter && matrixState[nextPos.row][nextPos.col].letter !== "") &&
+        !placedLetters.some(item => item.position.row === nextPos!.row && item.position.col === nextPos!.col)
+      ) {
+        return [nextPos];
+      }
+      return []; // Yön boyunca devam edilemiyorsa boş dizi
     }
-    
-    return []; // Yerleştirilebilecek kare yoksa boş dizi döndür
+
+    // Durum 4: Sonraki turlarda yeni bir kelimenin ilk harfi yerleştiriliyor (placedLetters boş)
+    if (!isBoardEmpty && placedLetters.length === 0) {
+      const positions: {row: number, col: number}[] = [];
+      for (let row = 0; row < matrixState.length; row++) {
+        for (let col = 0; col < matrixState[row].length; col++) {
+          const hasLetter = matrixState[row][col].letter && matrixState[row][col].letter !== "";
+          if (!hasLetter) {
+            positions.push({ row, col });
+          }
+        }
+      }
+      return positions;
+    }
+
+
+    return []; // Hiçbir duruma uymuyorsa (genelde olmamalı)
   };
-  
-  // Harfin yerleştirilebileceği konumlar
-  const placeablePositions = selectedTileIndex !== null ? calculatePlaceablePositions() : [];
-  
+
+  // Harfin yerleştirilebileceği konumlar - useMemo ile optimize edildi
+  // selectedTileIndex veya placedLetters değiştiğinde yeniden hesaplanır
+  const placeablePositions = useMemo(() => {
+    if (selectedTileIndex === null) {
+      return [];
+    }
+    return calculatePlaceablePositions();
+  }, [selectedTileIndex, placedLetters, matrixState]); // matrixState'i de bağımlılıklara ekle
+
   // Bir hücrenin yerleştirilebilir olup olmadığını kontrol et
   const isPlaceablePosition = (rowIndex: number, colIndex: number): boolean => {
     return placeablePositions.some(pos => pos.row === rowIndex && pos.col === colIndex);
@@ -216,64 +341,38 @@ const GameBoard: React.FC<GameBoardProps> = ({ roomId, userId }) => {
 
   // Handle cell selection for placing a letter
   const handleCellSelect = (rowIndex: number, colIndex: number) => {
+    if (!isUsersTurn) return;
     // Check if a tile is selected
     if(selectedTileIndex !== null) {
       const selectedTile = playerTiles[selectedTileIndex];
-      
-      // İlk harf yıldıza konulmalı kontrolü
-      if(placedLetters.length === 0 && (rowIndex !== centerCell.row || colIndex !== centerCell.col)) {
-        // İlk harfin merkeze koyulması gerekiyor, başka bir yere koyulamaz
+
+      // Sadece yerleştirilebilir pozisyonlara harf koy
+      if (!isPlaceablePosition(rowIndex, colIndex)) {
         return;
       }
-      
-      // İkinci harf kontrolü
-      if(placedLetters.length === 1) {
-        if(!isValidSecondLetterPosition(rowIndex, colIndex)) {
-          // İkinci harf sadece belirli pozisyonlara konulabilir
-          return;
-        }
-        // Kelime yönünü belirle
-        const direction = determineWordDirection(rowIndex, colIndex);
-        setWordDirection(direction);
-      }
-      
-      // Üçüncü ve sonraki harfler için yön kontrolü
-      if(placedLetters.length >= 2) {
-        if(!isValidNextPosition(rowIndex, colIndex)) {
-          // Sonraki harf, belirlenen yönde devam etmeli
-          return;
-        }
-      }
 
-      // Check if the cell is empty
-      const isOccupied = placedLetters.some(
-        item => item.position.row === rowIndex && item.position.col === colIndex
-      );
-      
-      if(!isOccupied) {
-        // Place the letter
-        const newPlacedLetters = [...placedLetters, {
-          letter: selectedTile.letter,
-          points: selectedTile.points,
-          position: { row: rowIndex, col: colIndex }
-        }];
-        
-        setPlacedLetters(newPlacedLetters);
-        
-        // Remove the letter from player tiles
-        const newPlayerTiles = [...playerTiles];
-        newPlayerTiles.splice(selectedTileIndex, 1);
-        setPlayerTiles(newPlayerTiles);
-        
-        // Reset selection
-        setSelectedTileIndex(null);
-      }
+      // Place the letter
+      const newPlacedLetters = [...placedLetters, {
+        letter: selectedTile.letter,
+        points: selectedTile.points,
+        position: { row: rowIndex, col: colIndex }
+      }];
+
+      setPlacedLetters(newPlacedLetters);
+
+      // Remove the letter from player tiles
+      const newPlayerTiles = [...playerTiles];
+      newPlayerTiles.splice(selectedTileIndex, 1);
+      setPlayerTiles(newPlayerTiles);
+
+      // Reset selection
+      setSelectedTileIndex(null);
     } else {
-      // Check if there's a letter at this position to remove
+      // Sadece kendi koyduğu harfi kaldırabilir (son koyduğu harfi)
       const letterIndex = placedLetters.findIndex(
         item => item.position.row === rowIndex && item.position.col === colIndex
       );
-      
+
       if(letterIndex !== -1) {
         // Son harf mi kontrol et (son harfi kaldırmak izin veriliyor)
         if(letterIndex === placedLetters.length - 1) {
@@ -283,18 +382,13 @@ const GameBoard: React.FC<GameBoardProps> = ({ roomId, userId }) => {
             letter: removedLetter.letter,
             points: removedLetter.points
           }];
-          
+
           // Remove from placed letters
           const newPlacedLetters = [...placedLetters];
           newPlacedLetters.splice(letterIndex, 1);
-          
+
           setPlayerTiles(newPlayerTiles);
           setPlacedLetters(newPlacedLetters);
-          
-          // Eğer kalan harf sayısı 1 ise, yön sıfırlanmalı
-          if(newPlacedLetters.length === 1) {
-            setWordDirection(WordDirection.NONE);
-          }
         }
       }
     }
@@ -320,7 +414,7 @@ const GameBoard: React.FC<GameBoardProps> = ({ roomId, userId }) => {
     setCurrentWord(word);
     
     // Kelimeyi doğrula (en az 2 harf olmalı)
-    if (word.length >= 2) {
+    if (word.length >= 1) {
       setWordValidation(WordValidationState.CHECKING);
       
       // Gerçek uygulamada isValidWord yerine isValidWordSync kullanılabilir
@@ -331,23 +425,31 @@ const GameBoard: React.FC<GameBoardProps> = ({ roomId, userId }) => {
     }
   }, [placedLetters]);
 
-  // Onaylama işlemi
-  const handleConfirm = () => {
-    if (wordValidation === WordValidationState.VALID) {
-      // Puanlama yapılabilir (burada yapmıyoruz)
-      console.log(`Confirmed word "${currentWord}" in room ${roomId} by user ${userId}`);
-      
-      // Yerleştirilen harfleri temizle
-      setPlacedLetters([]);
-      setWordDirection(WordDirection.NONE);
-      setCurrentWord('');
-      setWordValidation(WordValidationState.NONE);
-      
-      // Yeni harfler çek, mevcut harflere 7'ye tamamlayacak kadar ekle
-      const newLettersNeeded = 7 - playerTiles.length;
-      if (newLettersNeeded > 0) {
-        const newLetters = getRandomLetters(newLettersNeeded);
-        setPlayerTiles([...playerTiles, ...newLetters]);
+  // Onaylama işlemi (WebSocket ile hamle gönder)
+  const handleConfirm = async () => {
+    if (wordValidation === WordValidationState.VALID && isUsersTurn) {
+      try {
+        // WebSocket ile hamle gönder
+        sendMove(roomId!, placedLetters);
+
+        setPlacedLetters([]);
+        setWordDirection(WordDirection.NONE);
+        setCurrentWord('');
+        setWordValidation(WordValidationState.NONE);
+
+        // Harfleri yeniden çek
+        const res = await fetch(`${API_URL}/letters?userId=${userId}&roomId=${roomId}`);
+        const data: string[] = await res.json();
+        const tiles = data.map(letter => {
+          const info = LETTER_DISTRIBUTION.find(l => l.letter === letter);
+          return {
+            letter,
+            points: info ? info.points : 0
+          };
+        });
+        setPlayerTiles(tiles);
+      } catch (error) {
+        console.error(error);
       }
     }
   };
@@ -364,94 +466,109 @@ const GameBoard: React.FC<GameBoardProps> = ({ roomId, userId }) => {
     }
   };
 
-  // Özel hücre tiplerini göstermek için yardımcı fonksiyon
-  const renderCellContent = (cellValue: string, rowIndex: number, colIndex: number) => {
-    // Check if there's a placed letter at this position
-    const placedLetter = getPlacedLetterAt(rowIndex, colIndex);
-    if(placedLetter) {
+  // Hücre tipine göre arka plan stilini döndür
+  const getCellBackgroundStyle = (cell: any, rowIndex: number, colIndex: number) => {
+    // Merkez hücre
+    if (rowIndex === centerCell.row && colIndex === centerCell.col) {
+      return styles.centerCell;
+    }
+    // Çarpan hücresi
+    if (cell.type === "multiplier" && cell.multiplier) {
+      if (cell.multiplier.startsWith("word")) {
+        return styles.wordCell;
+      }
+      if (cell.multiplier.startsWith("letter")) {
+        return styles.letterCell;
+      }
+    }
+    // Normal hücre
+    return styles.normalCell;
+  };
+
+  // Hücre içeriğini render et
+  const renderCellContent = (cell: any, rowIndex: number, colIndex: number) => {
+    // Öncelikle geçici olarak yerleştirilen harf var mı kontrol et
+    const tempPlaced = placedLetters.find(
+      item => item.position.row === rowIndex && item.position.col === colIndex
+    );
+    if (tempPlaced) {
       return (
-        <View style={[
-          styles.placedLetterContainer,
-          getLetterFrameStyle()
-        ]}>
-          <Text style={styles.placedLetter}>{placedLetter.letter}</Text>
-          <Text style={styles.placedPoints}>{placedLetter.points}</Text>
+        <View style={[styles.placedLetterContainer, getLetterFrameStyle()]}>
+          <Text style={styles.placedLetter}>{tempPlaced.letter}</Text>
         </View>
       );
     }
-    
-    if(cellValue === "★") {
+
+    // Yerleştirilmiş harf varsa göster (sunucudan gelen)
+    if (cell.letter && cell.letter !== "") {
+      return (
+        <View style={[styles.placedLetterContainer, getLetterFrameStyle()]}>
+          <Text style={styles.placedLetter}>{cell.letter}</Text>
+        </View>
+      );
+    }
+
+    // Merkez hücre (★)
+    if (rowIndex === centerCell.row && colIndex === centerCell.col) {
       return <Text style={styles.starCell}>★</Text>;
     }
-    
-    if(cellValue.includes('word')) {
-      const multiplier = cellValue.split('*')[1];
-      if(multiplier === '2') {
-        return (
-          <View style={[styles.specialCell, styles.wordMultiplier2]}>
-            <Text style={styles.multiplierText}>W</Text>
-            <Text style={styles.multiplierValue}>{multiplier}</Text>
-          </View>
-        );
-      }
-      if(multiplier === '3') {
-        return (
-          <View style={[styles.specialCell, styles.wordMultiplier3]}>
-            <Text style={styles.multiplierText}>W</Text>
-            <Text style={styles.multiplierValue}>{multiplier}</Text>
-          </View>
-        );
-      }
+
+    // Çarpan hücresi
+    if (cell.type === "multiplier" && cell.multiplier) {
+      const [type, multiplier] = cell.multiplier.split("*");
+      const style =
+        type === "word"
+          ? multiplier === "2"
+            ? styles.wordMultiplier2
+            : styles.wordMultiplier3
+          : multiplier === "2"
+          ? styles.letterMultiplier2
+          : styles.letterMultiplier3;
+
+      return (
+        <View style={[styles.specialCell, style]}>
+          <Text style={styles.multiplierText}>{type === "word" ? "W" : "L"}</Text>
+          <Text style={styles.multiplierValue}>{multiplier}</Text>
+        </View>
+      );
     }
-    
-    if(cellValue.includes('letter')) {
-      const multiplier = cellValue.split('*')[1];
-      if(multiplier === '2') {
-        return (
-          <View style={[styles.specialCell, styles.letterMultiplier2]}>
-            <Text style={styles.multiplierText}>L</Text>
-            <Text style={styles.multiplierValue}>{multiplier}</Text>
-          </View>
-        );
-      }
-      if(multiplier === '3') {
-        return (
-          <View style={[styles.specialCell, styles.letterMultiplier3]}>
-            <Text style={styles.multiplierText}>L</Text>
-            <Text style={styles.multiplierValue}>{multiplier}</Text>
-          </View>
-        );
-      }
+
+    // Mayın hücresi
+    if (cell.type === "mine" && cell.mineActive) {
+      return <Text style={{ color: 'red' }}>💣</Text>;
     }
-    
+
     return null;
   };
 
   return (
     <View style={styles.container}>
-      {/* Room Info (Optional) */}
+      {/* Room Info (Sıra bilgisi güncellendi) */}
       {roomId && userId && (
         <View style={styles.roomInfoContainer}>
           <Text style={styles.roomInfoText}>Oda: {roomId}</Text>
+          <Text style={[
+            styles.roomInfoText,
+            isUsersTurn ? { color: '#27ae60', fontWeight: 'bold' } : { color: '#e74c3c', fontWeight: 'bold' }
+          ]}>
+            {isUsersTurn ? "Sizin sıranız" : "Karşı oyuncunun sırası"}
+          </Text>
           <Text style={styles.roomInfoText}>Oyuncu: {userId}</Text>
         </View>
       )}
       {/* Game board */}
       <View style={[styles.boardContainer, { width: boardContainerWidth }]}>
         <View style={styles.board}>
-          {INITIAL_BOARD.map((row, rowIndex) => (
+          {matrixState.map((row, rowIndex) => (
             <View key={`row-${rowIndex}`} style={styles.row}>
               {row.map((cell, colIndex) => (
-                <TouchableOpacity 
+                <TouchableOpacity
                   key={`cell-${rowIndex}-${colIndex}`}
                   onPress={() => handleCellSelect(rowIndex, colIndex)}
                   style={[
                     styles.cell,
                     { width: cellSize, height: cellSize },
-                    cell.includes('word') ? styles.wordCell : null,
-                    cell.includes('letter') ? styles.letterCell : null,
-                    cell === "★" ? styles.centerCell : null,
-                    cell === "" ? styles.normalCell : null,
+                    getCellBackgroundStyle(cell, rowIndex, colIndex),
                     isPlaceablePosition(rowIndex, colIndex) ? styles.placeableCell : null,
                   ]}
                 >
@@ -480,20 +597,20 @@ const GameBoard: React.FC<GameBoardProps> = ({ roomId, userId }) => {
         <TouchableOpacity 
           style={[
             styles.confirmButton,
-            wordValidation !== WordValidationState.VALID ? styles.confirmButtonDisabled : null
+            (!isUsersTurn || wordValidation !== WordValidationState.VALID) ? styles.confirmButtonDisabled : null
           ]}
           onPress={handleConfirm}
-          disabled={wordValidation !== WordValidationState.VALID}
+          disabled={!isUsersTurn || wordValidation !== WordValidationState.VALID}
         >
-          <Ionicons name="checkmark-circle" size={22} color={wordValidation === WordValidationState.VALID ? "#fff" : "#999"} />
-          <Text style={[styles.confirmButtonText, wordValidation !== WordValidationState.VALID ? styles.confirmButtonTextDisabled : null]}>
+          <Ionicons name="checkmark-circle" size={22} color={isUsersTurn && wordValidation === WordValidationState.VALID ? "#fff" : "#999"} />
+          <Text style={[styles.confirmButtonText, (!isUsersTurn || wordValidation !== WordValidationState.VALID) ? styles.confirmButtonTextDisabled : null]}>
             Onayla
           </Text>
         </TouchableOpacity>
       </View>
 
       {/* Letter tiles */}
-      <View style={styles.tilesContainer}>
+      <View style={[styles.tilesContainer, !isUsersTurn ? { opacity: 0.5 } : null]}>
         {playerTiles.map((tile, index) => (
           <TouchableOpacity 
             key={`tile-${index}`}
@@ -502,6 +619,7 @@ const GameBoard: React.FC<GameBoardProps> = ({ roomId, userId }) => {
               styles.tileWrapper,
               selectedTileIndex === index ? styles.selectedTile : null
             ]}
+            disabled={!isUsersTurn}
           >
             <LetterTile
               letter={tile.letter}
@@ -685,7 +803,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     borderRadius: 5,
     elevation: 2,
-    position: 'absolute',
     left: 5,
     bottom: 5,
   },

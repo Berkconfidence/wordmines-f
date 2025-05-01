@@ -9,7 +9,7 @@ import { router } from 'expo-router';
 export default function NewGame() {
 
     const handleBack = () => {
-        router.back(); // Önceki sayfaya dönüş
+        router.push('/home'); // Önceki sayfaya dönüş
     };
 
     const handleGameStart = (duration: string) => {

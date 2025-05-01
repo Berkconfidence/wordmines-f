@@ -1,13 +1,84 @@
-import React from "react";
-import { View, Text , TouchableOpacity, StyleSheet, KeyboardAvoidingView, Platform, ScrollView, Image, StatusBar } from 'react-native';
+import React, { useEffect, useState } from "react";
+import { View, Text , TouchableOpacity, StyleSheet, KeyboardAvoidingView, Platform, ScrollView, Image, StatusBar, ActivityIndicator } from 'react-native';
 import Animated, { FadeInUp } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { API_URL } from '@/config';
+
 
 export default function ActiveGames() {
+    // Kullanıcı id'sini alın (örnek olarak sabit)
+    const [userId, setUserId] = useState<string | null>(null);
+    const [games, setGames] = useState<any[]>([]);
+    const [loading, setLoading] = useState(true);
+
+    useEffect(() => {
+        const fetchGames = async () => {
+            if (!userId) {
+                setGames([]); // userId yoksa boş dizi ata
+                setLoading(false);
+                return;
+            }
+            try {
+                const res = await fetch(`${API_URL}/gameroom/active?userId=${userId}`);
+                const data = await res.json();
+                setGames(Array.isArray(data) ? data : []); // Her durumda dizi ata
+            } catch (e) {
+                setGames([]);
+            } finally {
+                setLoading(false);
+            }
+        };
+        fetchGames();
+    }, [userId]);
+
+    useEffect(() => {
+        // AsyncStorage'dan userId'yi al
+        AsyncStorage.getItem('userId').then(id => {
+          setUserId(id);
+        });
+      }, []);
 
     const handleBack = () => {
-        router.back(); // Önceki sayfaya dönüş
+        router.push('/home');
+    };
+
+    // Oyun kartına tıklanınca ilgili oyun ekranına git
+    const handleGamePress = (roomId: number, opponentId: number) => {
+        router.push({
+            pathname: "/game/[roomId]",
+            params: { 
+                roomId: roomId,
+                opponentId: opponentId,
+                userId: userId
+            },
+        });
+    };
+
+    // Rakip id ve adını bul
+    const getOpponentId = (game: any) => {
+        return String(game.player1Id) === String(userId) ? game.player2Id : game.player1Id;
+    };
+    const getOpponentName = (game: any) => {
+        // Eğer backend'den username gelmiyorsa, sadece id göster
+        return String(game.player1Id) === String(userId) ? `Oyuncu ${game.player2Id}` : `Oyuncu ${game.player1Id}`;
+    };
+
+    // Oyun süresini okunabilir hale getir
+    const formatDuration = (duration: string) => {
+        if (duration === "24h") return "24 Saat";
+        if (duration === "12h") return "12 Saat";
+        if (duration && duration.endsWith("m")) return `${duration.replace("m", "")} Dakika`;
+        return duration || "-";
+    };
+
+    // Sıra kimde kontrolü
+    const getMoveOrder = (game: any) => {
+        if (String(game.currentTurn) === String(userId)) {
+            return { text: "Sizin Sıranız", mine: true };
+        }
+        return { text: "Rakipte", mine: false };
     };
 
     return (
@@ -33,55 +104,57 @@ export default function ActiveGames() {
                 </View>
 
                 <View>
-                    <TouchableOpacity style={styles.gameCard}>
-                        <Animated.View 
-                            entering={FadeInUp.duration(1000).springify()}
-                        >
-                            <View style={{flexDirection: 'row', justifyContent: 'space-between', marginBottom: 2}}>
-                                <Text style={styles.opponentName}>berkconfidence</Text>
-                                <Text style={styles.scoreTable}>42 - 38</Text>                             
-                            </View>
-                            <View style={{flexDirection: 'row', justifyContent: 'space-between'}}>
-                                <Text style={styles.gameTime}>24 Saat</Text>
-                                <View style={{flexDirection: 'row'}}>
-                                    <Text style={styles.moveOrderMine}>Sizin Sıranız</Text>
-                                    <Image
-                                        source={require('../../../assets/images/persontickicon.png')}
-                                        style={{ width: 20, height: 20, marginRight: 15 }}
-                                    />
-                                </View>
-                            </View>
-                            <View style={{flexDirection: 'row', justifyContent: 'space-between'}}>
-                                <Text style={styles.remainingTimeLabel}>Kalan süre:</Text>
-                                <Text style={styles.remainingTime}>1 saat 23 dk</Text>
-                            </View>                        
-                        </Animated.View>
-                    </TouchableOpacity>
-
-                    <TouchableOpacity style={styles.gameCard}>
-                        <Animated.View 
-                            entering={FadeInUp.duration(1000).springify()}
-                        >
-                            <View style={{flexDirection: 'row', justifyContent: 'space-between', marginBottom: 2}}>
-                                <Text style={styles.opponentName}>berkconfidence</Text>
-                                <Text style={styles.scoreTable}>42 - 38</Text>                             
-                            </View>
-                            <View style={{flexDirection: 'row', justifyContent: 'space-between'}}>
-                                <Text style={styles.gameTime}>24 Saat</Text>
-                                <View style={{flexDirection: 'row'}}>
-                                    <Text style={styles.moveOrderOpponent}>Sizin Sıranız</Text>
-                                    <Image
-                                        source={require('../../../assets/images/clockred.png')}
-                                        style={{ width: 20, height: 20, marginRight: 15 }}
-                                    />
-                                </View>
-                            </View>
-                            <View style={{flexDirection: 'row', justifyContent: 'space-between'}}>
-                                <Text style={styles.remainingTimeLabel}>Kalan süre:</Text>
-                                <Text style={styles.remainingTime}>1 saat 23 dk</Text>
-                            </View>                        
-                        </Animated.View>
-                    </TouchableOpacity>
+                    {loading && (
+                        <ActivityIndicator size="large" color="#3498db" style={{ marginTop: 40 }} />
+                    )}
+                    {!loading && games.length === 0 && (
+                        <Text style={{ textAlign: 'center', marginTop: 40, color: '#888' }}>
+                            Aktif oyununuz yok.
+                        </Text>
+                    )}
+                    {!loading && games.map((game, idx) => {
+                        const opponentName = getOpponentName(game);
+                        const moveOrder = getMoveOrder(game);
+                        const score = 
+                            String(game.player1Id) === String(userId)
+                                ? `${game.player1Score} - ${game.player2Score}`
+                                : `${game.player2Score} - ${game.player1Score}`;
+                        const opponentId = getOpponentId(game);
+                        return (
+                            <TouchableOpacity
+                                key={game.roomId || idx}
+                                style={styles.gameCard}
+                                onPress={() => handleGamePress(game.roomId, opponentId)}
+                            >
+                                <Animated.View entering={FadeInUp.duration(1000).springify()}>
+                                    <View style={{flexDirection: 'row', justifyContent: 'space-between', marginBottom: 2}}>
+                                        <Text style={styles.opponentName}>{opponentName}</Text>
+                                        <Text style={styles.scoreTable}>{score}</Text>
+                                    </View>
+                                    <View style={{flexDirection: 'row', justifyContent: 'space-between'}}>
+                                        <Text style={styles.gameTime}>{formatDuration(game.gameDuration)}</Text>
+                                        <View style={{flexDirection: 'row'}}>
+                                            <Text style={moveOrder.mine ? styles.moveOrderMine : styles.moveOrderOpponent}>
+                                                {moveOrder.text}
+                                            </Text>
+                                            <Image
+                                                source={moveOrder.mine
+                                                    ? require('../../../assets/images/persontickicon.png')
+                                                    : require('../../../assets/images/clockred.png')}
+                                                style={{ width: 20, height: 20, marginRight: 15 }}
+                                            />
+                                        </View>
+                                    </View>
+                                    <View style={{flexDirection: 'row', justifyContent: 'space-between'}}>
+                                        <Text style={styles.remainingTimeLabel}>Oda ID:</Text>
+                                        <Text style={styles.remainingTime}>
+                                            {game.roomId}
+                                        </Text>
+                                    </View>
+                                </Animated.View>
+                            </TouchableOpacity>
+                        );
+                    })}
                 </View>
             </ScrollView>
         </KeyboardAvoidingView>

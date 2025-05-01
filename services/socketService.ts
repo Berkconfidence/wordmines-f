@@ -98,19 +98,56 @@ export const joinRoom = (roomId: string) => {
   }
 };
 
-// Hamle gönderme fonksiyonu
-export const sendMove = (roomId: string, position: { row: number, col: number }, letter: string) => {
+// Hamle gönderme fonksiyonu (WebSocket ile)
+export const sendMove = (
+  roomId: string,
+  moves: { letter: string; points: number; position: { row: number; col: number } }[]
+) => {
   const client = createStompClient();
-  
-  if (client.connected) {
+
+  const publishMove = () => {
     client.publish({
       destination: '/app/move',
-      body: JSON.stringify({ roomId, position, letter }),
+      body: JSON.stringify({ roomId, moves }),
     });
-    console.log(`Hamle gönderildi: ${letter} - (${position.row},${position.col})`);
+    console.log(`Hamle gönderildi:`, moves);
+  };
+
+  if (client.connected) {
+    publishMove();
   } else {
-    console.error('WebSocket bağlantısı kurulamadı');
+    client.onConnect = () => {
+      publishMove();
+    };
+    if (!client.active) client.activate();
   }
+};
+
+// Hamleleri dinleme fonksiyonu (güncel matrix için)
+export const listenForBoardUpdates = (roomId: string, onUpdate: (matrix: any[][]) => void) => {
+  const client = createStompClient();
+
+  let subscription: any;
+
+  const subscribeBoard = () => {
+    subscription = client.subscribe(`/topic/board-update/${roomId}`, (message) => {
+      const matrix = JSON.parse(message.body);
+      onUpdate(matrix);
+    });
+  };
+
+  if (client.connected) {
+    subscribeBoard();
+  } else {
+    client.onConnect = () => {
+      subscribeBoard();
+    };
+    if (!client.active) client.activate();
+  }
+
+  return () => {
+    if (subscription) subscription.unsubscribe();
+  };
 };
 
 // Hamleleri dinleme fonksiyonu

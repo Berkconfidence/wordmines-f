@@ -9,7 +9,7 @@ export default function Game() {
     const { roomId, opponentId, userId } = params;
 
     const handleBack = () => {
-        router.push('/new-game'); // Yeni oyun sayfasına geri dön
+        router.replace('/home'); // Yeni oyun sayfasına geri dön ve bu ekranı stack'ten çıkar
     };
 
     return (
