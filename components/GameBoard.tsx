@@ -1,8 +1,7 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Dimensions, ActivityIndicator } from 'react-native';
 import LetterTile from './LetterTile';
 import { LETTER_DISTRIBUTION } from '../constants/letterDistribution';
-import { isValidWordSync } from '../utils/wordValidator';
 import { Ionicons } from '@expo/vector-icons';
 import { API_URL } from '@/config';
 import { sendMove, listenForBoardUpdates } from '../services/socketService';
@@ -35,6 +34,17 @@ enum WordValidationState {
   CHECKING = 'checking'
 }
 
+interface PlayerInfo {
+  username: string;
+  score: number;
+}
+
+interface GameStatus {
+  player1: PlayerInfo;
+  player2: PlayerInfo;
+  remainingLetters: number;
+}
+
 const GameBoard: React.FC<GameBoardProps> = ({ roomId, userId }) => {
   const [playerTiles, setPlayerTiles] = useState<{ letter: string; points: number }[]>([]);
   const [selectedTileIndex, setSelectedTileIndex] = useState<number | null>(null);
@@ -46,10 +56,32 @@ const GameBoard: React.FC<GameBoardProps> = ({ roomId, userId }) => {
   const { width: windowWidth } = Dimensions.get('window');
   const [isUsersTurn, setIsUsersTurn] = useState<boolean>(false);
   const [boardListener, setBoardListener] = useState<(() => void) | null>(null);
+  const [wordScore, setWordScore] = useState<number | null>(null);
+  const [gameStatus, setGameStatus] = useState<GameStatus | null>(null);
+  const [isLoadingStatus, setIsLoadingStatus] = useState<boolean>(false);
 
   // Calculate responsive sizes
   const cellSize = Math.min(windowWidth / 17, 24); // Limiting to max 24px
   const boardContainerWidth = (cellSize + 3) * 15; // 15 cells per row + margins
+
+  // Fetch game status function (using useCallback for stability)
+  const fetchGameStatus = useCallback(async () => {
+    if (!roomId) return;
+    setIsLoadingStatus(true);
+    try {
+      const res = await fetch(`${API_URL}/gameroom/status?roomId=${roomId}`);
+      if (!res.ok) {
+        throw new Error(`HTTP error! status: ${res.status}`);
+      }
+      const data: GameStatus = await res.json();
+      setGameStatus(data); // Update state directly
+    } catch (error) {
+      console.error("Oyun durumu alınamadı:", error);
+      setGameStatus(null); // Hata durumunda sıfırla
+    } finally {
+      setIsLoadingStatus(false);
+    }
+  }, [roomId]); // Dependency: roomId
 
   //Tahtayı çekme işlemleri
   useEffect(() => {
@@ -90,12 +122,14 @@ const GameBoard: React.FC<GameBoardProps> = ({ roomId, userId }) => {
       } catch (error) {
         console.error("Harfler alınamadı", error);
       }
+      // Fetch game status after board update
+      fetchGameStatus();
     });
     setBoardListener(() => unsubscribe);
     return () => {
       unsubscribe();
     };
-  }, [roomId, userId]);
+  }, [roomId, userId, fetchGameStatus]); // Add fetchGameStatus to dependencies
 
   //Harfleri çekme ve ilk sırayı kontrol etme işlemleri
   useEffect(() => {
@@ -157,6 +191,10 @@ const GameBoard: React.FC<GameBoardProps> = ({ roomId, userId }) => {
     };
   }, [roomId, userId]);
 
+  // Fetch game status (player info, scores, remaining letters) - Initial fetch only
+  useEffect(() => {
+    fetchGameStatus(); // Initial fetch when component mounts or roomId changes
+  }, [fetchGameStatus]); // Use the useCallback version
 
   // Log roomId and userId when they change
   useEffect(() => {
@@ -244,10 +282,8 @@ const GameBoard: React.FC<GameBoardProps> = ({ roomId, userId }) => {
 
   // Harfin yerleştirilebileceği kareleri hesaplayan fonksiyon
   const calculatePlaceablePositions = (): {row: number, col: number}[] => {
-    // Matris yüklenmediyse veya boşsa erken çık
     if (!matrixState || matrixState.length === 0) return [];
 
-    // Boardda hiç harf yoksa (oyunun ilk hamlesi)
     const isBoardEmpty = matrixState.every(row => row.every(cell => !cell.letter || cell.letter === ""));
 
     // Durum 1: Oyunun ilk harfi yerleştiriliyor (placedLetters boş)
@@ -256,7 +292,7 @@ const GameBoard: React.FC<GameBoardProps> = ({ roomId, userId }) => {
     }
 
     // Durum 2: Oyunun ikinci harfi yerleştiriliyor (ilk harf geçici olarak konuldu)
-    // VEYA sonraki bir turda kelimenin ikinci harfi yerleştiriliyor
+    // Bu kısım değişmiyor, çapraz dahil tüm komşular geçerli
     if (placedLetters.length === 1) {
       const first = placedLetters[0].position;
       const directions = [
@@ -280,6 +316,7 @@ const GameBoard: React.FC<GameBoardProps> = ({ roomId, userId }) => {
     }
 
     // Durum 3: Üçüncü ve sonraki harfler yerleştiriliyor (yön belirlenmiş)
+    // Bu kısım değişmiyor, belirlenen yönde devam ediyor (çapraz dahil)
     if (placedLetters.length >= 2) {
       const first = placedLetters[0].position;
       const second = placedLetters[1].position;
@@ -310,17 +347,34 @@ const GameBoard: React.FC<GameBoardProps> = ({ roomId, userId }) => {
     // Durum 4: Sonraki turlarda yeni bir kelimenin ilk harfi yerleştiriliyor (placedLetters boş)
     if (!isBoardEmpty && placedLetters.length === 0) {
       const positions: {row: number, col: number}[] = [];
+      // SADECE SAĞ, SOL, ÜST, ALT komşulara izin ver (çapraz yok)
+      const directions = [
+        { dr: -1, dc: 0 }, // yukarı
+        { dr: 1, dc: 0 },  // aşağı
+        { dr: 0, dc: -1 }, // sol
+        { dr: 0, dc: 1 },  // sağ
+      ];
       for (let row = 0; row < matrixState.length; row++) {
         for (let col = 0; col < matrixState[row].length; col++) {
           const hasLetter = matrixState[row][col].letter && matrixState[row][col].letter !== "";
-          if (!hasLetter) {
-            positions.push({ row, col });
+          if (hasLetter) {
+            // Sadece dikey/yatay komşu boş kareleri bul
+            directions.forEach(dir => {
+              const nr = row + dir.dr;
+              const nc = col + dir.dc;
+              if (
+                nr >= 0 && nr < 15 && nc >= 0 && nc < 15 &&
+                !(matrixState[nr][nc].letter && matrixState[nr][nc].letter !== "") &&
+                !positions.some(pos => pos.row === nr && pos.col === nc)
+              ) {
+                positions.push({ row: nr, col: nc });
+              }
+            });
           }
         }
       }
       return positions;
     }
-
 
     return []; // Hiçbir duruma uymuyorsa (genelde olmamalı)
   };
@@ -406,22 +460,55 @@ const GameBoard: React.FC<GameBoardProps> = ({ roomId, userId }) => {
     if (placedLetters.length === 0) {
       setCurrentWord('');
       setWordValidation(WordValidationState.NONE);
+      setWordScore(null);
       return;
     }
     
     // Kelimeyi oluştur
     const word = placedLetters.map(letter => letter.letter).join('');
     setCurrentWord(word);
-    
+
     // Kelimeyi doğrula (en az 2 harf olmalı)
     if (word.length >= 1) {
       setWordValidation(WordValidationState.CHECKING);
+      setWordScore(null);
+
+      // Backend'e yeni API ile istek at
+      fetch(`${API_URL}/validate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          roomId: roomId,
+          moves: placedLetters.map(l => ({
+            letter: l.letter,
+            points: l.points,
+            position: l.position
+          }))
+        })
+      })
+        .then(res => res.json())
+        .then((response: { valid: boolean | string; score: number }) => { // 'isValid' yerine 'valid' kullanıldı
+          // Log the raw response from the backend
+          console.log('Backend Validation Response:', response);
       
-      // Gerçek uygulamada isValidWord yerine isValidWordSync kullanılabilir
-      const isValid = isValidWordSync(word);
-      setWordValidation(isValid ? WordValidationState.VALID : WordValidationState.INVALID);
+          // Check for both boolean true and string "true" using 'valid'
+          const isValidWord = response.valid === true || response.valid === "true"; // 'isValid' yerine 'valid' kullanıldı
+          const validationState = isValidWord ? WordValidationState.VALID : WordValidationState.INVALID;
+      
+          // Log the determined validation state before setting it
+          console.log('Setting wordValidation state to:', validationState);
+      
+          setWordValidation(validationState);
+          setWordScore(response.score ?? null);
+        })
+        .catch((error) => { // Also log any errors during fetch/parsing
+          console.error('Error during word validation fetch:', error);
+          setWordValidation(WordValidationState.INVALID);
+          setWordScore(null);
+        });
     } else {
       setWordValidation(WordValidationState.NONE);
+      setWordScore(null);
     }
   }, [placedLetters]);
 
@@ -432,24 +519,27 @@ const GameBoard: React.FC<GameBoardProps> = ({ roomId, userId }) => {
         // WebSocket ile hamle gönder
         sendMove(roomId!, placedLetters);
 
+        // Reset local state immediately for better UX
         setPlacedLetters([]);
         setWordDirection(WordDirection.NONE);
         setCurrentWord('');
         setWordValidation(WordValidationState.NONE);
+        setWordScore(null); // Reset score display
 
-        // Harfleri yeniden çek
-        const res = await fetch(`${API_URL}/letters?userId=${userId}&roomId=${roomId}`);
-        const data: string[] = await res.json();
-        const tiles = data.map(letter => {
-          const info = LETTER_DISTRIBUTION.find(l => l.letter === letter);
-          return {
-            letter,
-            points: info ? info.points : 0
-          };
-        });
-        setPlayerTiles(tiles);
+        // Harfleri yeniden çek (Bu zaten WebSocket listener'da tetiklenecek,
+        // ama anında güncelleme için burada da kalabilir veya kaldırılabilir)
+        // const res = await fetch(`${API_URL}/letters?userId=${userId}&roomId=${roomId}`);
+        // const data: string[] = await res.json();
+        // const tiles = data.map(letter => { ... });
+        // setPlayerTiles(tiles);
+
+        // Fetch game status after confirming move
+        // The WebSocket listener will also trigger this, but calling here ensures
+        // the status updates even if the socket message is delayed.
+        // fetchGameStatus(); // Fetch status after sending move
+
       } catch (error) {
-        console.error(error);
+        console.error("Hamle gönderilirken hata:", error);
       }
     }
   };
@@ -492,6 +582,7 @@ const GameBoard: React.FC<GameBoardProps> = ({ roomId, userId }) => {
       item => item.position.row === rowIndex && item.position.col === colIndex
     );
     if (tempPlaced) {
+      // Sadece kendi koyduğu harfler için çerçeve rengi uygula
       return (
         <View style={[styles.placedLetterContainer, getLetterFrameStyle()]}>
           <Text style={styles.placedLetter}>{tempPlaced.letter}</Text>
@@ -501,8 +592,9 @@ const GameBoard: React.FC<GameBoardProps> = ({ roomId, userId }) => {
 
     // Yerleştirilmiş harf varsa göster (sunucudan gelen)
     if (cell.letter && cell.letter !== "") {
+      // Önceden konulan harfler için çerçeve rengi uygulama
       return (
-        <View style={[styles.placedLetterContainer, getLetterFrameStyle()]}>
+        <View style={styles.placedLetterContainer}>
           <Text style={styles.placedLetter}>{cell.letter}</Text>
         </View>
       );
@@ -580,33 +672,34 @@ const GameBoard: React.FC<GameBoardProps> = ({ roomId, userId }) => {
         </View>
       </View>
 
-      {/* Kelime kontrolü ve onay butonu */}
-      <View style={styles.controlsContainer}>
-        <View style={styles.wordInfoContainer}>
-          <Text style={styles.currentWordLabel}>Kelime: </Text>
-          <Text style={[
-            styles.currentWord,
-            wordValidation === WordValidationState.VALID ? styles.validWord : null,
-            wordValidation === WordValidationState.INVALID ? styles.invalidWord : null,
-          ]}>
-            {currentWord}
-          </Text>
-          {wordValidation === WordValidationState.CHECKING && <ActivityIndicator size="small" />}
-        </View>
-        
-        <TouchableOpacity 
-          style={[
-            styles.confirmButton,
-            (!isUsersTurn || wordValidation !== WordValidationState.VALID) ? styles.confirmButtonDisabled : null
-          ]}
-          onPress={handleConfirm}
-          disabled={!isUsersTurn || wordValidation !== WordValidationState.VALID}
-        >
-          <Ionicons name="checkmark-circle" size={22} color={isUsersTurn && wordValidation === WordValidationState.VALID ? "#fff" : "#999"} />
-          <Text style={[styles.confirmButtonText, (!isUsersTurn || wordValidation !== WordValidationState.VALID) ? styles.confirmButtonTextDisabled : null]}>
-            Onayla
-          </Text>
-        </TouchableOpacity>
+      
+      {/* Kullanıcıların bilgiler ve kalan harf sayısı */}
+      <View style={styles.userinformation}>
+        {isLoadingStatus ? (
+          <ActivityIndicator size="small" />
+        ) : gameStatus ? (
+          <>
+            {/* Player 1 Info (Left) */}
+            <View style={styles.playerInfoBox}>
+              <Text style={styles.userInfoText} numberOfLines={1}>{gameStatus.player1.username}</Text>
+              <Text style={styles.userInfoText}>Puan: {gameStatus.player1.score}</Text>
+            </View>
+
+            {/* Remaining Letters (Center) */}
+            <View style={styles.remainingLettersBox}>
+              <Text style={styles.remainingLettersText}>Kalan Harf</Text>
+              <Text style={styles.remainingLettersCount}>{gameStatus.remainingLetters}</Text>
+            </View>
+
+            {/* Player 2 Info (Right) */}
+            <View style={styles.playerInfoBox}>
+              <Text style={styles.userInfoText} numberOfLines={1}>{gameStatus.player2.username}</Text>
+              <Text style={styles.userInfoText}>Puan: {gameStatus.player2.score}</Text>
+            </View>
+          </>
+        ) : (
+          <Text style={styles.userInfoText}>Oyun bilgileri yüklenemedi.</Text>
+        )}
       </View>
 
       {/* Letter tiles */}
@@ -628,6 +721,35 @@ const GameBoard: React.FC<GameBoardProps> = ({ roomId, userId }) => {
           </TouchableOpacity>
         ))}
       </View>
+
+      {/* Kelime kontrolü ve onay butonu */}
+      <View style={styles.controlsContainer}>
+        <View style={styles.wordInfoContainer}>
+          {wordValidation === WordValidationState.CHECKING && <ActivityIndicator size="small" />}
+          {/* Puanı göster */}
+          {wordScore !== null && wordValidation !== WordValidationState.NONE && (
+            <Text style={{ marginLeft: 8, fontWeight: 'bold', color: '#555' }}>
+              ({wordScore} puan)
+            </Text>
+          )}
+        </View>
+        
+        <TouchableOpacity 
+          style={[
+            styles.confirmButton,
+            (!isUsersTurn || wordValidation !== WordValidationState.VALID) ? styles.confirmButtonDisabled : null
+          ]}
+          onPress={handleConfirm}
+          disabled={!isUsersTurn || wordValidation !== WordValidationState.VALID}
+        >
+          <Ionicons name="checkmark-circle" size={22} color={isUsersTurn && wordValidation === WordValidationState.VALID ? "#fff" : "#999"} />
+          <Text style={[styles.confirmButtonText, (!isUsersTurn || wordValidation !== WordValidationState.VALID) ? styles.confirmButtonTextDisabled : null]}>
+            Onayla
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      
     </View>
   );
 };
@@ -757,6 +879,41 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.5,
     shadowRadius: 4,
     elevation: 3,
+  },
+  // Kullanıcıların bilgiler ve kalan harf sayısı
+  userinformation: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center', // Align items vertically
+    width: '95%', // Use percentage for better responsiveness
+    paddingHorizontal: 10,
+    marginTop: 15, // Increased margin
+    marginBottom: 5, // Added margin bottom
+    minHeight: 40, // Ensure minimum height
+  },
+  playerInfoBox: {
+    flex: 1, // Take up available space
+    alignItems: 'center', // Center text horizontally
+    paddingHorizontal: 5, // Add some padding
+  },
+  userInfoText: {
+    fontSize: 13, // Slightly smaller font size
+    fontWeight: 'bold',
+    color: '#333', // Darker color
+    textAlign: 'center', // Ensure text is centered
+  },
+  remainingLettersBox: {
+    alignItems: 'center', // Center text horizontally
+    marginHorizontal: 10, // Add horizontal margin
+  },
+  remainingLettersText: {
+    fontSize: 12,
+    color: '#555',
+  },
+  remainingLettersCount: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#000',
   },
   // Kelime doğrulama ve onay butonu için stiller
   validWordFrame: {
