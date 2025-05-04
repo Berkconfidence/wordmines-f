@@ -9,6 +9,7 @@ import { sendMove, listenForBoardUpdates } from '../services/socketService';
 interface GameBoardProps {
   roomId?: string;
   userId?: string;
+  duration?: number; // dakika cinsinden props ile alınacak
 }
 
 interface PlacedLetter {
@@ -43,9 +44,10 @@ interface GameStatus {
   player1: PlayerInfo;
   player2: PlayerInfo;
   remainingLetters: number;
+  duration?: number;  // Optional duration property in minutes
 }
 
-const GameBoard: React.FC<GameBoardProps> = ({ roomId, userId }) => {
+const GameBoard: React.FC<GameBoardProps> = ({ roomId, userId, duration }) => {
   const [playerTiles, setPlayerTiles] = useState<{ letter: string; points: number }[]>([]);
   const [selectedTileIndex, setSelectedTileIndex] = useState<number | null>(null);
   const [placedLetters, setPlacedLetters] = useState<PlacedLetter[]>([]);
@@ -61,6 +63,12 @@ const GameBoard: React.FC<GameBoardProps> = ({ roomId, userId }) => {
   const [isLoadingStatus, setIsLoadingStatus] = useState<boolean>(false);
   const [isBoardLoading, setIsBoardLoading] = useState<boolean>(false);
   const [isLettersLoading, setIsLettersLoading] = useState<boolean>(false);
+  const [moveTimer, setMoveTimer] = useState<number | null>(null);
+  const [moveTimerRunning, setMoveTimerRunning] = useState(false);
+  const timerIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const [lastMoveInfo, setLastMoveInfo] = useState<{ lastMoveAt: string, isFirstMove: boolean } | null>(null);
+  const [isGameFinished, setIsGameFinished] = useState(false);
+  const [finishMessage, setFinishMessage] = useState<string | null>(null);
 
   // Calculate responsive sizes
   const cellSize = Math.min(windowWidth / 17, 24); // Limiting to max 24px
@@ -561,36 +569,132 @@ const GameBoard: React.FC<GameBoardProps> = ({ roomId, userId }) => {
     }
   }, [placedLetters]);
 
-  // Onaylama işlemi (WebSocket ile hamle gönder)
+  // Hamle onaylandığında timer'ı tetiklemek için state
+  const [movePlayed, setMovePlayed] = useState(false);
+
+  // Hamle onaylandığında movePlayed'i tetikle
   const handleConfirm = async () => {
     if (wordValidation === WordValidationState.VALID && isUsersTurn) {
       try {
-        // WebSocket ile hamle gönder
         sendMove(roomId!, placedLetters);
-
-        // Reset local state immediately for better UX
         setPlacedLetters([]);
         setWordDirection(WordDirection.NONE);
         setCurrentWord('');
         setWordValidation(WordValidationState.NONE);
-        setWordScore(null); // Reset score display
-
-        // Harfleri yeniden çek (Bu zaten WebSocket listener'da tetiklenecek,
-        // ama anında güncelleme için burada da kalabilir veya kaldırılabilir)
-        // const res = await fetch(`${API_URL}/letters?userId=${userId}&roomId=${roomId}`);
-        // const data: string[] = await res.json();
-        // const tiles = data.map(letter => { ... });
-        // setPlayerTiles(tiles);
-
-        // Fetch game status after confirming move
-        // The WebSocket listener will also trigger this, but calling here ensures
-        // the status updates even if the socket message is delayed.
-        // fetchGameStatus(); // Fetch status after sending move
-
+        setWordScore(null);
+        // Hamle oynandı, timer tetiklenmeli
+        setMovePlayed(true);
       } catch (error) {
         console.error("Hamle gönderilirken hata:", error);
       }
     }
+  };
+
+  // Sıra kullanıcıya geçtiğinde veya hamle oynandığında timer'ı başlat
+  useEffect(() => {
+    if (!roomId || !gameStatus) {
+      setMoveTimer(null);
+      setMoveTimerRunning(false);
+      if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
+      return;
+    }
+
+    // Hamle oynandıysa veya sıra kullanıcıya geçtiyse moveinfo çek
+    const fetchMoveInfoAndStartTimer = async () => {
+      try {
+        const res = await fetch(`${API_URL}/gameboard/moveinfo?roomId=${roomId}`);
+        const data = await res.json(); // { lastMoveAt, isFirstMove }
+        setLastMoveInfo(data);
+
+        // Süre hesaplama
+        const now = new Date();
+        const lastMoveAt = new Date(data.lastMoveAt);
+        const isFirstMove = data.isFirstMove;
+        // Öncelik sırası: props.duration > gameStatus?.duration > fallback
+        let durationSec = 180;
+        if (isFirstMove) {
+          durationSec = 3600;
+        } else if (typeof duration === "number" && !isFirstMove) {
+          durationSec = duration * 60;
+        } else if (gameStatus?.duration && !isFirstMove) {
+          durationSec = gameStatus.duration * 60;
+        }
+        const elapsed = Math.floor((now.getTime() - lastMoveAt.getTime()) / 1000);
+        const left = durationSec - elapsed;
+        setMoveTimer(left > 0 ? left : 0);
+        setMoveTimerRunning(true);
+      } catch (e) {
+        setMoveTimer(null);
+        setMoveTimerRunning(false);
+      }
+    };
+
+    fetchMoveInfoAndStartTimer();
+    setMovePlayed(false); // resetle
+
+    // Temizlik
+    return () => {
+      if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
+    };
+  }, [movePlayed, roomId, gameStatus, duration]);
+
+  // Timer'ı azalt
+  useEffect(() => {
+    if (!moveTimerRunning || moveTimer === null) return;
+    if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
+
+    timerIntervalRef.current = setInterval(() => {
+      setMoveTimer(prev => {
+        if (prev === null) return null;
+        if (prev <= 1) {
+          clearInterval(timerIntervalRef.current!);
+          // Süre bittiğinde oyun bitirme işlemi
+          if (
+            isUsersTurn &&
+            !isGameFinished &&
+            roomId
+          ) {
+            // Yeni backend endpointine sadece roomId ile POST isteği gönder
+            fetch(`${API_URL}/gameroom/finish?roomId=${roomId}`, {
+              method: "POST"
+            })
+              .then(async res => {
+                const data = await res.json();
+                // Kullanıcıya göre mesaj hazırla
+                const winnerId = data.winnerId !== undefined ? String(data.winnerId) : "";
+                const loserId = data.loserId !== undefined ? String(data.loserId) : "";
+                const myId = userId !== undefined ? String(userId) : "";
+                if (myId && winnerId && myId === winnerId) {
+                  setFinishMessage(`Tebrikler, kazandınız! 🎉\nKazanan: ${data.winnerUsername}`);
+                } else if (myId && loserId && myId === loserId) {
+                  setFinishMessage(`Üzgünüz, kaybettiniz.\nKazanan: ${data.winnerUsername}`);
+                } else {
+                  setFinishMessage("Oyun sona erdi.");
+                }
+                setIsGameFinished(true);
+              })
+              .catch(() => {
+                setFinishMessage("Oyun sona erdi.");
+                setIsGameFinished(true);
+              });
+          }
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => {
+      if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
+    };
+  }, [moveTimerRunning, moveTimer, isUsersTurn, isGameFinished, roomId, userId]);
+
+  // Süreyi dakika:saniye olarak formatla
+  const formatTime = (sec: number | null) => {
+    if (sec === null) return "--:--";
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return `${m}:${s.toString().padStart(2, "0")}`;
   };
 
   // Kelime doğrulama durumuna göre çerçeve rengini belirle
@@ -684,17 +788,61 @@ const GameBoard: React.FC<GameBoardProps> = ({ roomId, userId }) => {
 
   return (
     <View style={styles.container}>
-      {/* Room Info (Sıra bilgisi güncellendi) */}
-      {roomId && userId && (
-        <View style={styles.roomInfoContainer}>
-          <Text style={styles.roomInfoText}>Oda: {roomId}</Text>
-          <Text style={[
-            styles.roomInfoText,
-            isUsersTurn ? { color: '#27ae60', fontWeight: 'bold' } : { color: '#e74c3c', fontWeight: 'bold' }
-          ]}>
-            {isUsersTurn ? "Sizin sıranız" : "Karşı oyuncunun sırası"}
+      {/* Oyun bitiş mesajı */}
+      {isGameFinished && (
+        <View style={{ backgroundColor: "#fffbe6", padding: 12, borderRadius: 8, marginBottom: 10 }}>
+          <Text style={{ color: "#e74c3c", fontWeight: "bold", textAlign: "center", fontSize: 16 }}>
+            {finishMessage || "Oyun sona erdi."}
           </Text>
-          <Text style={styles.roomInfoText}>Oyuncu: {userId}</Text>
+        </View>
+      )}
+      {/* Modern Room Info & Timer */}
+      {roomId && userId && (
+        <View style={styles.modernRoomCard}>
+          <View style={styles.modernRoomRow}>
+            <Text style={styles.modernRoomLabel}>Oda</Text>
+            <Text style={styles.modernRoomValue}>{roomId}</Text>
+          </View>
+          <View style={styles.modernRoomRow}>
+            <Text
+              style={[
+                styles.modernTurnText,
+                isUsersTurn ? styles.modernTurnActive : styles.modernTurnPassive,
+              ]}
+            >
+              {isUsersTurn ? "Sizin sıranız" : "Karşı oyuncunun sırası"}
+            </Text>
+          </View>
+          <View style={styles.modernRoomRow}>
+            <Text style={styles.modernRoomLabel}>Oyuncu</Text>
+            <Text style={styles.modernRoomValue}>{userId}</Text>
+          </View>
+          <View style={styles.modernTimerContainer}>
+            <Text
+              style={[
+                styles.modernTimerText,
+                moveTimer !== null && moveTimer < 15
+                  ? styles.modernTimerWarning
+                  : styles.modernTimerNormal,
+              ]}
+            >
+              Hamle süresi: {formatTime(moveTimer)}
+            </Text>
+            <View style={styles.modernProgressBarBackground}>
+              <View
+                style={[
+                  styles.modernProgressBarFill,
+                  {
+                    width: `${
+                      moveTimer !== null
+                        ? Math.max(0, Math.min(100, (100 * moveTimer) / ((typeof duration === "number" ? duration : 3) * 60)))
+                        : 100
+                    }%`,
+                  },
+                ]}
+              />
+            </View>
+          </View>
         </View>
       )}
       {/* Game board */}
@@ -734,14 +882,25 @@ const GameBoard: React.FC<GameBoardProps> = ({ roomId, userId }) => {
         {isLoadingStatus ? (
           <ActivityIndicator size="small" />
         ) : gameStatus ? (
-          <View style={styles.statusRowModern}>
-            {/* Player 1 */}
-            <Text style={styles.nameModern} numberOfLines={1}>{gameStatus.player1.username}</Text>
-            <Text style={styles.scoreModern}>{gameStatus.player1.score}</Text>
-            <Text style={styles.remainingModern}>{gameStatus.remainingLetters}</Text>
-            <Text style={styles.scoreModern}>{gameStatus.player2.score}</Text>
-            <Text style={styles.nameModern} numberOfLines={1}>{gameStatus.player2.username}</Text>
-          </View>
+          (() => {
+            // id değerleri string'e çevrilerek karşılaştırılır
+            const userIdStr = String(userId);
+            const p1 = gameStatus.player1 as any;
+            const p2 = gameStatus.player2 as any;
+            // id alanı backend'den geliyor, yoksa fallback olarak eski haliyle devam et
+            const isUserP1 = p1.id !== undefined && String(p1.id) === userIdStr;
+            const left = isUserP1 ? p1 : p2;
+            const right = isUserP1 ? p2 : p1;
+            return (
+              <View style={styles.statusRowModern}>
+                <Text style={styles.nameModern} numberOfLines={1}>{left.username}</Text>
+                <Text style={styles.scoreModern}>{left.score}</Text>
+                <Text style={styles.remainingModern}>{gameStatus.remainingLetters}</Text>
+                <Text style={styles.scoreModern}>{right.score}</Text>
+                <Text style={styles.nameModern} numberOfLines={1}>{right.username}</Text>
+              </View>
+            );
+          })()
         ) : (
           <Text style={styles.userInfoText}>Oyun bilgileri yüklenemedi.</Text>
         )}
@@ -1080,6 +1239,67 @@ const styles = StyleSheet.create({
     marginHorizontal: 2,
     borderWidth: 2,
     borderColor: '#00cd5f',
+  },
+  modernRoomCard: {
+    backgroundColor: '#fff',
+    borderRadius: 10,
+    padding: 10,
+    marginBottom: 10,
+    width: '95%',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  modernRoomRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 5,
+  },
+  modernRoomLabel: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#555',
+  },
+  modernRoomValue: {
+    fontSize: 14,
+    color: '#333',
+  },
+  modernTurnText: {
+    fontSize: 14,
+    fontWeight: 'bold',
+  },
+  modernTurnActive: {
+    color: '#27ae60',
+  },
+  modernTurnPassive: {
+    color: '#e74c3c',
+  },
+  modernTimerContainer: {
+    marginTop: 5,
+  },
+  modernTimerText: {
+    fontSize: 14,
+    fontWeight: 'bold',
+  },
+  modernTimerWarning: {
+    color: '#e74c3c',
+  },
+  modernTimerNormal: {
+    color: '#32235f',
+  },
+  modernProgressBarBackground: {
+    height: 6,
+    backgroundColor: '#e0e0e0',
+    borderRadius: 3,
+    overflow: 'hidden',
+    marginTop: 2,
+  },
+  modernProgressBarFill: {
+    height: '100%',
+    backgroundColor: '#27ae60',
   },
 });
 

@@ -6,7 +6,15 @@ import GameBoard from '../../components/GameBoard';
 
 export default function Game() {
     const params = useLocalSearchParams();
-    const { roomId, opponentId, userId } = params;
+    const { roomId, opponentId, userId, duration } = params;
+
+    // duration'u dakika cinsine çevir
+    let durationMinutes: number | undefined = undefined;
+    if (duration) {
+        const d = Number(duration);
+        if (d === 2 || d === 5) durationMinutes = d;
+        else if (d === 12 || d === 24) durationMinutes = d * 60;
+    }
 
     const handleBack = () => {
         router.replace('/home'); // Yeni oyun sayfasına geri dön ve bu ekranı stack'ten çıkar
@@ -22,8 +30,11 @@ export default function Game() {
                 
                 <ScrollView contentContainerStyle={styles.scrollContent}>
                     <View style={styles.content}>
-                        <Text style={styles.gameInfo}>Oda: {roomId}</Text>
-                        <GameBoard roomId={String(roomId)} userId={String(userId)} />
+                        <GameBoard
+                            roomId={String(roomId)}
+                            userId={String(userId)}
+                            duration={durationMinutes}
+                        />
                     </View>
                 </ScrollView>
             </SafeAreaView>

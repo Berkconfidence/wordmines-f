@@ -84,7 +84,8 @@ export default function WaitingScreen() {
             params: { 
               roomId: matchData.roomId,
               opponentId: matchData.opponentId,
-              userId: userId
+              userId: userId,
+              duration: duration
             },
           });
         },

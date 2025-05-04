@@ -1,13 +1,42 @@
 import React from "react";
-import { View, Text, TouchableOpacity, StyleSheet, KeyboardAvoidingView, Platform, ScrollView, Image, StatusBar } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, KeyboardAvoidingView, Platform, ScrollView, Image, StatusBar, RefreshControl } from 'react-native';
 import Animated, { FadeInUp } from 'react-native-reanimated';
 import { router } from 'expo-router';
 import { Colors } from '../../../constants/Colors';
 import { LinearGradient } from 'expo-linear-gradient';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { API_URL } from '@/config';
 
 export default function Home() {
+    const [winRatio, setWinRatio] = React.useState(0);
+    const [username, setUsername] = React.useState<string>("");
+    const [refreshing, setRefreshing] = React.useState(false);
 
-    const [winRatio, setWinRatio] = React.useState(0.75);
+    const fetchSuccessRate = React.useCallback(() => {
+        AsyncStorage.getItem('userId').then(userId => {
+            if (!userId) return;
+            fetch(`${API_URL}/gameroom/successrate?userId=${userId}`)
+                .then(res => res.json())
+                .then(data => {
+                    if (typeof data.successRate === "number") setWinRatio(data.successRate / 100);
+                    if (typeof data.username === "string") setUsername(data.username);
+                })
+                .catch(() => {
+                    setWinRatio(0);
+                    setUsername("");
+                });
+        });
+    }, []);
+
+    React.useEffect(() => {
+        fetchSuccessRate();
+    }, [fetchSuccessRate]);
+
+    const onRefresh = React.useCallback(() => {
+        setRefreshing(true);
+        fetchSuccessRate();
+        setTimeout(() => setRefreshing(false), 800);
+    }, [fetchSuccessRate]);
 
     const routerNewGame = () => {
         router.push('/new-game');
@@ -34,13 +63,16 @@ export default function Home() {
                 contentContainerStyle={styles.scrollContent}
                 showsVerticalScrollIndicator={false}
                 keyboardShouldPersistTaps="handled"
+                refreshControl={
+                    <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+                }
             >
                 <View style={styles.infoCard}>
                     <Animated.View 
                         entering={FadeInUp.duration(1000).springify()}
                     >
                         <View style={styles.infoHeader}>
-                            <Text style={styles.textName}>berkconfidence</Text>
+                            <Text style={styles.textName}>{username || "Kullanıcı"}</Text>
                             <View>
                                 <Text style={styles.text}>Başarı Yüzdesi: %{Math.round(winRatio * 100)}</Text>
                                 <View style={styles.progressContainer}>

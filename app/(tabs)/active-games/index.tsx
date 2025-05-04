@@ -8,22 +8,22 @@ import { API_URL } from '@/config';
 
 
 export default function ActiveGames() {
-    // Kullanıcı id'sini alın (örnek olarak sabit)
     const [userId, setUserId] = useState<string | null>(null);
     const [games, setGames] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
+    const [scoresMap, setScoresMap] = useState<{ [roomId: string]: any[] }>({}); // roomId -> scores array
 
     useEffect(() => {
         const fetchGames = async () => {
             if (!userId) {
-                setGames([]); // userId yoksa boş dizi ata
+                setGames([]);
                 setLoading(false);
                 return;
             }
             try {
                 const res = await fetch(`${API_URL}/gameroom/active?userId=${userId}`);
                 const data = await res.json();
-                setGames(Array.isArray(data) ? data : []); // Her durumda dizi ata
+                setGames(Array.isArray(data) ? data : []);
             } catch (e) {
                 setGames([]);
             } finally {
@@ -33,44 +33,86 @@ export default function ActiveGames() {
         fetchGames();
     }, [userId]);
 
+    // Her oyun için skorları çek
     useEffect(() => {
-        // AsyncStorage'dan userId'yi al
+        if (!games.length) return;
+        const fetchScores = async () => {
+            const newScoresMap: { [roomId: string]: any[] } = {};
+            await Promise.all(
+                games.map(async (game) => {
+                    try {
+                        const res = await fetch(`${API_URL}/gameroom/scores?roomId=${game.roomId}`);
+                        const data = await res.json();
+                        if (Array.isArray(data)) {
+                            newScoresMap[game.roomId] = data;
+                        }
+                    } catch {}
+                })
+            );
+            setScoresMap(newScoresMap);
+        };
+        fetchScores();
+    }, [games]);
+
+    useEffect(() => {
         AsyncStorage.getItem('userId').then(id => {
-          setUserId(id);
+            setUserId(id);
         });
-      }, []);
+    }, []);
 
     const handleBack = () => {
         router.push('/home');
     };
 
-    // Oyun kartına tıklanınca ilgili oyun ekranına git
-    const handleGamePress = (roomId: number, opponentId: number) => {
+    const handleGamePress = (roomId: number, opponentId: number, duration: string | number) => {
         router.push({
             pathname: "/game/[roomId]",
             params: { 
                 roomId: roomId,
                 opponentId: opponentId,
-                userId: userId
+                userId: userId,
+                duration: duration // duration parametresi eklendi
             },
         });
     };
 
-    // Rakip id ve adını bul
-    const getOpponentId = (game: any) => {
-        return String(game.player1Id) === String(userId) ? game.player2Id : game.player1Id;
+    // Rakip adı: id'si userId'den farklı olan oyuncunun username'i
+    const getOpponentName = (roomId: string | number) => {
+        const scores = scoresMap[roomId];
+        if (!scores || !userId) return "";
+        const opponent = scores.find((p: any) => String(p.userId) !== String(userId));
+        return opponent ? opponent.username : "";
     };
-    const getOpponentName = (game: any) => {
-        // Eğer backend'den username gelmiyorsa, sadece id göster
-        return String(game.player1Id) === String(userId) ? `Oyuncu ${game.player2Id}` : `Oyuncu ${game.player1Id}`;
+
+    // Skorları userId'ye göre sırala ve renkleri belirle
+    const getScoreRow = (roomId: string | number) => {
+        const scores = scoresMap[roomId];
+        if (!scores || !userId) return null;
+        const user = scores.find((p: any) => String(p.userId) === String(userId));
+        const opponent = scores.find((p: any) => String(p.userId) !== String(userId));
+        if (!user || !opponent) return null;
+        // Renkler
+        const userColor = user.score > opponent.score ? styles.scoreGreen : user.score < opponent.score ? styles.scoreRed : styles.scoreGray;
+        const opponentColor = opponent.score > user.score ? styles.scoreGreen : opponent.score < user.score ? styles.scoreRed : styles.scoreGray;
+        return (
+            <Text style={styles.scoreTable}>
+                <Text style={userColor}>{user.score}</Text>
+                {" - "}
+                <Text style={opponentColor}>{opponent.score}</Text>
+            </Text>
+        );
     };
 
     // Oyun süresini okunabilir hale getir
     const formatDuration = (duration: string) => {
-        if (duration === "24h") return "24 Saat";
-        if (duration === "12h") return "12 Saat";
-        if (duration && duration.endsWith("m")) return `${duration.replace("m", "")} Dakika`;
-        return duration || "-";
+        if (!duration) return "-";
+        if (duration === "24" || duration === "24h") return "24 Saat";
+        if (duration === "12" || duration === "12h") return "12 Saat";
+        if (duration === "2" || duration === "2m") return "2 Dakika";
+        if (duration === "5" || duration === "5m") return "5 Dakika";
+        if (duration.endsWith("m")) return `${duration.replace("m", "")} Dakika`;
+        if (duration.endsWith("h")) return `${duration.replace("h", "")} Saat`;
+        return duration;
     };
 
     // Sıra kimde kontrolü
@@ -113,23 +155,20 @@ export default function ActiveGames() {
                         </Text>
                     )}
                     {!loading && games.map((game, idx) => {
-                        const opponentName = getOpponentName(game);
+                        const opponentName = getOpponentName(game.roomId);
                         const moveOrder = getMoveOrder(game);
-                        const score = 
-                            String(game.player1Id) === String(userId)
-                                ? `${game.player1Score} - ${game.player2Score}`
-                                : `${game.player2Score} - ${game.player1Score}`;
-                        const opponentId = getOpponentId(game);
+                        const scoreRow = getScoreRow(game.roomId);
+                        const opponentId = String(game.player1Id) === String(userId) ? game.player2Id : game.player1Id;
                         return (
                             <TouchableOpacity
                                 key={game.roomId || idx}
                                 style={styles.gameCard}
-                                onPress={() => handleGamePress(game.roomId, opponentId)}
+                                onPress={() => handleGamePress(game.roomId, opponentId, game.gameDuration)} // duration parametresi gönderildi
                             >
                                 <Animated.View entering={FadeInUp.duration(1000).springify()}>
                                     <View style={{flexDirection: 'row', justifyContent: 'space-between', marginBottom: 2}}>
                                         <Text style={styles.opponentName}>{opponentName}</Text>
-                                        <Text style={styles.scoreTable}>{score}</Text>
+                                        {scoreRow}
                                     </View>
                                     <View style={{flexDirection: 'row', justifyContent: 'space-between'}}>
                                         <Text style={styles.gameTime}>{formatDuration(game.gameDuration)}</Text>
@@ -234,6 +273,18 @@ const styles = StyleSheet.create({
         paddingRight: 15,
         paddingTop: 15,
         fontSize: 16,
+        fontWeight: 'bold',
+    },
+    scoreGreen: {
+        color: '#16a34a',
+        fontWeight: 'bold',
+    },
+    scoreRed: {
+        color: '#dc2626',
+        fontWeight: 'bold',
+    },
+    scoreGray: {
+        color: '#71717a',
         fontWeight: 'bold',
     },
 });
