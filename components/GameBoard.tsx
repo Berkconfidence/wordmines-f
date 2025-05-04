@@ -59,6 +59,8 @@ const GameBoard: React.FC<GameBoardProps> = ({ roomId, userId }) => {
   const [wordScore, setWordScore] = useState<number | null>(null);
   const [gameStatus, setGameStatus] = useState<GameStatus | null>(null);
   const [isLoadingStatus, setIsLoadingStatus] = useState<boolean>(false);
+  const [isBoardLoading, setIsBoardLoading] = useState<boolean>(false);
+  const [isLettersLoading, setIsLettersLoading] = useState<boolean>(false);
 
   // Calculate responsive sizes
   const cellSize = Math.min(windowWidth / 17, 24); // Limiting to max 24px
@@ -85,19 +87,32 @@ const GameBoard: React.FC<GameBoardProps> = ({ roomId, userId }) => {
 
   //Tahtayı çekme işlemleri
   useEffect(() => {
-    const fetchBoardMatrix = async () => {
+    let retryTimeout: NodeJS.Timeout | null = null;
+    const fetchBoardMatrix = async (retryCount = 0) => {
+      if (!roomId) return;
+      setIsBoardLoading(true);
       try {
         const res = await fetch(`${API_URL}/gameboard/matrix?roomId=${roomId}`);
+        if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
         const matrix = await res.json();
         setMatrixState(matrix);
+        setIsBoardLoading(false);
       } catch (error) {
-        console.error("Tahta verisi alınamadı", error);
+        if (retryCount < 5) {
+          retryTimeout = setTimeout(() => fetchBoardMatrix(retryCount + 1), 1000);
+        } else {
+          setIsBoardLoading(false);
+          console.error("Tahta verisi alınamadı", error);
+        }
       }
     };
   
     if (roomId) {
       fetchBoardMatrix();
     }
+    return () => {
+      if (retryTimeout) clearTimeout(retryTimeout);
+    };
   }, [roomId]);
 
   // WebSocket ile board güncellemelerini dinle
@@ -133,9 +148,12 @@ const GameBoard: React.FC<GameBoardProps> = ({ roomId, userId }) => {
 
   //Harfleri çekme ve ilk sırayı kontrol etme işlemleri
   useEffect(() => {
-    const fetchLetters = async () => {
+    let retryTimeout: NodeJS.Timeout | null = null;
+    const fetchLetters = async (retryCount = 0) => {
+      setIsLettersLoading(true);
       try {
         const res = await fetch(`${API_URL}/letters?userId=${userId}&roomId=${roomId}`);
+        if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
         const data: string[] = await res.json(); // ["A", "İ", "K", ...]
         // Her harf için puan bilgisini ekle
         const tiles = data.map(letter => {
@@ -146,8 +164,14 @@ const GameBoard: React.FC<GameBoardProps> = ({ roomId, userId }) => {
           };
         });
         setPlayerTiles(tiles);
+        setIsLettersLoading(false);
       } catch (error) {
-        console.error("Harfler alınamadı", error);
+        if (retryCount < 5) {
+          retryTimeout = setTimeout(() => fetchLetters(retryCount + 1), 1000);
+        } else {
+          setIsLettersLoading(false);
+          console.error("Harfler alınamadı", error);
+        }
       }
     };
     const fetchTurn = async () => {
@@ -164,6 +188,9 @@ const GameBoard: React.FC<GameBoardProps> = ({ roomId, userId }) => {
       fetchTurn();
       fetchLetters();
     }
+    return () => {
+      if (retryTimeout) clearTimeout(retryTimeout);
+    };
   }, [roomId, userId]);
 
   // Sıra bilgisini düzenli olarak güncelle (polling)
@@ -193,7 +220,29 @@ const GameBoard: React.FC<GameBoardProps> = ({ roomId, userId }) => {
 
   // Fetch game status (player info, scores, remaining letters) - Initial fetch only
   useEffect(() => {
-    fetchGameStatus(); // Initial fetch when component mounts or roomId changes
+    let retryTimeout: NodeJS.Timeout | null = null;
+    const fetchStatusWithRetry = async (retryCount = 0) => {
+      setIsLoadingStatus(true);
+      try {
+        const res = await fetch(`${API_URL}/gameroom/status?roomId=${roomId}`);
+        if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+        const data: GameStatus = await res.json();
+        setGameStatus(data);
+        setIsLoadingStatus(false);
+      } catch (error) {
+        if (retryCount < 5) {
+          retryTimeout = setTimeout(() => fetchStatusWithRetry(retryCount + 1), 1000);
+        } else {
+          setGameStatus(null);
+          setIsLoadingStatus(false);
+          console.error("Oyun durumu alınamadı:", error);
+        }
+      }
+    };
+    fetchStatusWithRetry();
+    return () => {
+      if (retryTimeout) clearTimeout(retryTimeout);
+    };
   }, [fetchGameStatus]); // Use the useCallback version
 
   // Log roomId and userId when they change
@@ -650,26 +699,33 @@ const GameBoard: React.FC<GameBoardProps> = ({ roomId, userId }) => {
       )}
       {/* Game board */}
       <View style={[styles.boardContainer, { width: boardContainerWidth }]}>
-        <View style={styles.board}>
-          {matrixState.map((row, rowIndex) => (
-            <View key={`row-${rowIndex}`} style={styles.row}>
-              {row.map((cell, colIndex) => (
-                <TouchableOpacity
-                  key={`cell-${rowIndex}-${colIndex}`}
-                  onPress={() => handleCellSelect(rowIndex, colIndex)}
-                  style={[
-                    styles.cell,
-                    { width: cellSize, height: cellSize },
-                    getCellBackgroundStyle(cell, rowIndex, colIndex),
-                    isPlaceablePosition(rowIndex, colIndex) ? styles.placeableCell : null,
-                  ]}
-                >
-                  {renderCellContent(cell, rowIndex, colIndex)}
-                </TouchableOpacity>
-              ))}
-            </View>
-          ))}
-        </View>
+        {isBoardLoading || isLettersLoading ? (
+          <View style={{ alignItems: 'center', justifyContent: 'center', height: 350 }}>
+            <ActivityIndicator size="large" color="#3498db" />
+            <Text style={{ marginTop: 10, color: '#555' }}>Oyun hazırlanıyor...</Text>
+          </View>
+        ) : (
+          <View style={styles.board}>
+            {matrixState.map((row, rowIndex) => (
+              <View key={`row-${rowIndex}`} style={styles.row}>
+                {row.map((cell, colIndex) => (
+                  <TouchableOpacity
+                    key={`cell-${rowIndex}-${colIndex}`}
+                    onPress={() => handleCellSelect(rowIndex, colIndex)}
+                    style={[
+                      styles.cell,
+                      { width: cellSize, height: cellSize },
+                      getCellBackgroundStyle(cell, rowIndex, colIndex),
+                      isPlaceablePosition(rowIndex, colIndex) ? styles.placeableCell : null,
+                    ]}
+                  >
+                    {renderCellContent(cell, rowIndex, colIndex)}
+                  </TouchableOpacity>
+                ))}
+              </View>
+            ))}
+          </View>
+        )}
       </View>
 
       
@@ -678,25 +734,14 @@ const GameBoard: React.FC<GameBoardProps> = ({ roomId, userId }) => {
         {isLoadingStatus ? (
           <ActivityIndicator size="small" />
         ) : gameStatus ? (
-          <>
-            {/* Player 1 Info (Left) */}
-            <View style={styles.playerInfoBox}>
-              <Text style={styles.userInfoText} numberOfLines={1}>{gameStatus.player1.username}</Text>
-              <Text style={styles.userInfoText}>Puan: {gameStatus.player1.score}</Text>
-            </View>
-
-            {/* Remaining Letters (Center) */}
-            <View style={styles.remainingLettersBox}>
-              <Text style={styles.remainingLettersText}>Kalan Harf</Text>
-              <Text style={styles.remainingLettersCount}>{gameStatus.remainingLetters}</Text>
-            </View>
-
-            {/* Player 2 Info (Right) */}
-            <View style={styles.playerInfoBox}>
-              <Text style={styles.userInfoText} numberOfLines={1}>{gameStatus.player2.username}</Text>
-              <Text style={styles.userInfoText}>Puan: {gameStatus.player2.score}</Text>
-            </View>
-          </>
+          <View style={styles.statusRowModern}>
+            {/* Player 1 */}
+            <Text style={styles.nameModern} numberOfLines={1}>{gameStatus.player1.username}</Text>
+            <Text style={styles.scoreModern}>{gameStatus.player1.score}</Text>
+            <Text style={styles.remainingModern}>{gameStatus.remainingLetters}</Text>
+            <Text style={styles.scoreModern}>{gameStatus.player2.score}</Text>
+            <Text style={styles.nameModern} numberOfLines={1}>{gameStatus.player2.username}</Text>
+          </View>
         ) : (
           <Text style={styles.userInfoText}>Oyun bilgileri yüklenemedi.</Text>
         )}
@@ -724,16 +769,6 @@ const GameBoard: React.FC<GameBoardProps> = ({ roomId, userId }) => {
 
       {/* Kelime kontrolü ve onay butonu */}
       <View style={styles.controlsContainer}>
-        <View style={styles.wordInfoContainer}>
-          {wordValidation === WordValidationState.CHECKING && <ActivityIndicator size="small" />}
-          {/* Puanı göster */}
-          {wordScore !== null && wordValidation !== WordValidationState.NONE && (
-            <Text style={{ marginLeft: 8, fontWeight: 'bold', color: '#555' }}>
-              ({wordScore} puan)
-            </Text>
-          )}
-        </View>
-        
         <TouchableOpacity 
           style={[
             styles.confirmButton,
@@ -747,6 +782,16 @@ const GameBoard: React.FC<GameBoardProps> = ({ roomId, userId }) => {
             Onayla
           </Text>
         </TouchableOpacity>
+        <View style={styles.wordInfoContainer}>
+          {wordValidation === WordValidationState.CHECKING && <ActivityIndicator size="small" />}
+          {/* Puanı göster */}
+          {wordScore !== null && wordValidation !== WordValidationState.NONE && (
+            <Text style={{ marginLeft: 8, fontWeight: 'bold', color: '#555' }}>
+              Kelime: ({wordScore} puan)
+            </Text>
+          )}
+        </View>
+        
       </View>
 
       
@@ -837,8 +882,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     flexWrap: 'wrap',
     padding: 5,
-    marginTop: 10,
-    maxWidth: '95%',
+    width: '105%',
+    backgroundColor: '#3498db',
+    borderBottomWidth: 1,
   },
   tileWrapper: {
     margin: 2,
@@ -884,12 +930,13 @@ const styles = StyleSheet.create({
   userinformation: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center', // Align items vertically
-    width: '95%', // Use percentage for better responsiveness
+    alignItems: 'center',
+    width: '105%',
     paddingHorizontal: 10,
-    marginTop: 15, // Increased margin
-    marginBottom: 5, // Added margin bottom
-    minHeight: 40, // Ensure minimum height
+    marginTop: 5,
+    minHeight: 40,
+    backgroundColor: '#3498db',
+    borderBottomWidth: 1,
   },
   playerInfoBox: {
     flex: 1, // Take up available space
@@ -928,10 +975,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    width: '90%',
-    marginTop: 10,
+    width: '105%',
+    height: 50,
     marginBottom: 10,
     padding: 5,
+    backgroundColor: '#3498db',
   },
   wordInfoContainer: {
     flexDirection: 'row',
@@ -953,7 +1001,7 @@ const styles = StyleSheet.create({
     color: '#e74c3c',
   },
   confirmButton: {
-    backgroundColor: '#3498db',
+    backgroundColor: '#00cd5a',
     flexDirection: 'row',
     alignItems: 'center',
     paddingVertical: 8,
@@ -961,7 +1009,6 @@ const styles = StyleSheet.create({
     borderRadius: 5,
     elevation: 2,
     left: 5,
-    bottom: 5,
   },
   confirmButtonDisabled: {
     backgroundColor: '#bdc3c7',
@@ -986,6 +1033,54 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#555',
   },
-  });
+  statusRowModern: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: '100%',
+    gap: 6,
+  },
+  nameModern: {
+    backgroundColor: '#fafafa',
+    color: '#32235f',
+    paddingHorizontal: 16,
+    paddingVertical: 6,
+    borderRadius: 12,
+    fontWeight: 'bold',
+    fontSize: 14,
+    maxWidth: 90,
+    overflow: 'hidden',
+    textAlign: 'center',
+    marginHorizontal: 2,
+    borderWidth: 1,
+    borderColor: '#000',
+  },
+  scoreModern: {
+    backgroundColor: '#32235f',
+    color: '#fafafa',
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 12,
+    fontWeight: 'bold',
+    fontSize: 14,
+    minWidth: 36,
+    textAlign: 'center',
+    marginHorizontal: 2,
+  },
+  remainingModern: {
+    backgroundColor: '#fafafa',
+    color: '#32235f',
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 12,
+    fontWeight: 'bold',
+    fontSize: 15,
+    minWidth: 36,
+    textAlign: 'center',
+    marginHorizontal: 2,
+    borderWidth: 2,
+    borderColor: '#00cd5f',
+  },
+});
 
 export default GameBoard;
